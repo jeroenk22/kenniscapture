@@ -1,0 +1,7 @@
+-r requirements.txt
+
+# Development
+ruff==0.15.18
+pytest>=8.0.0
+pytest-cov>=5.0.0
+httpx>=0.28.0

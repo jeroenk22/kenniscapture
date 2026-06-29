@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [develop]
+
+jobs:
+  test-backend:
+    name: Python backend
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Installeer dependencies
+        run: |
+          pip install -r backend/requirements.txt
+          pip install ruff==0.15.18 pytest>=8.0.0 pytest-cov>=5.0.0
+
+      - name: Ruff check
+        run: ruff check backend/
+
+      - name: Ruff format check
+        run: ruff format --check backend/
+
+      - name: Pytest
+        run: pytest tests/unit tests/integration --cov=backend --cov-fail-under=90 -v
+
+  test-frontend:
+    name: React frontend
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+          cache: "pnpm"
+          cache-dependency-path: chatbot_ui/pnpm-lock.yaml
+
+      - name: Installeer dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: chatbot_ui
+
+      - name: Biome check
+        run: pnpm biome check .
+        working-directory: chatbot_ui
+
+      - name: Type check
+        run: pnpm typecheck
+        working-directory: chatbot_ui
+
+      - name: Tests
+        run: pnpm test:coverage
+        working-directory: chatbot_ui
