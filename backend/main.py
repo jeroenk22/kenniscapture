@@ -1,4 +1,5 @@
 """FastAPI backend voor Kenniscapture systeem."""
+
 import asyncio
 import hashlib
 import json
@@ -34,7 +35,9 @@ _default_origins = [
     "http://127.0.0.1:8501",
 ]
 _extra = os.getenv("CORS_ORIGINS", "")
-_allowed_origins = _default_origins + [o.strip() for o in _extra.split(",") if o.strip()]
+_allowed_origins = _default_origins + [
+    o.strip() for o in _extra.split(",") if o.strip()
+]
 
 app.add_middleware(
     CORSMiddleware,
@@ -59,6 +62,7 @@ async def startup() -> None:
 
 
 # === Request modellen ===
+
 
 class GenerateQuestionRequest(BaseModel):
     document_id: int
@@ -92,6 +96,7 @@ class ChatRequest(BaseModel):
 
 # === Endpoints ===
 
+
 @app.post("/api/upload-document")
 async def upload_document(file: UploadFile = File(...)):
     content = await file.read()
@@ -117,7 +122,9 @@ async def upload_document(file: UploadFile = File(...)):
 
     suffix = Path(file.filename or "upload.pdf").suffix.lower()
     if suffix not in {".docx", ".pdf"}:
-        raise HTTPException(status_code=400, detail="Alleen .docx en .pdf bestanden worden ondersteund")
+        raise HTTPException(
+            status_code=400, detail="Alleen .docx en .pdf bestanden worden ondersteund"
+        )
 
     tmp_path = UPLOAD_DIR / f"{file_hash}{suffix}"
     async with aiofiles.open(tmp_path, "wb") as f:
@@ -129,7 +136,9 @@ async def upload_document(file: UploadFile = File(...)):
         else:
             text, passages = document_parser.parse_pdf(tmp_path)
     except Exception as exc:
-        _log.warning("Document parsing mislukt voor %s: %s", file.filename, exc, exc_info=True)
+        _log.warning(
+            "Document parsing mislukt voor %s: %s", file.filename, exc, exc_info=True
+        )
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     all_topics = database.get_all_topics()
@@ -211,7 +220,9 @@ async def parse_document(file: UploadFile = File(...)):
 
     suffix = Path(file.filename or "upload.pdf").suffix.lower()
     if suffix not in {".docx", ".pdf"}:
-        raise HTTPException(status_code=400, detail="Alleen .docx en .pdf bestanden worden ondersteund")
+        raise HTTPException(
+            status_code=400, detail="Alleen .docx en .pdf bestanden worden ondersteund"
+        )
 
     tmp_path = UPLOAD_DIR / f"{file_hash}{suffix}"
     async with aiofiles.open(tmp_path, "wb") as f:
@@ -231,7 +242,12 @@ async def parse_document(file: UploadFile = File(...)):
         file_hash=file_hash,
         page_count=len(passages),
     )
-    return {"doc_id": doc_id, "filename": file.filename, "file_hash": file_hash, "already_processed": False}
+    return {
+        "doc_id": doc_id,
+        "filename": file.filename,
+        "file_hash": file_hash,
+        "already_processed": False,
+    }
 
 
 @app.post("/api/analyze-document/{doc_id}")
@@ -244,7 +260,9 @@ async def analyze_document_endpoint(doc_id: int):
     suffix = Path(doc["filename"]).suffix.lower()
     tmp_path = UPLOAD_DIR / f"{doc['file_hash']}{suffix}"
     if not tmp_path.exists():
-        raise HTTPException(status_code=404, detail="Bestand niet meer aanwezig op disk")
+        raise HTTPException(
+            status_code=404, detail="Bestand niet meer aanwezig op disk"
+        )
 
     try:
         if suffix == ".docx":
@@ -381,23 +399,27 @@ async def get_documents():
         try:
             topics = json.loads(doc.get("extracted_topics") or "[]")
         except json.JSONDecodeError:
-            _log.warning("Corrupt extracted_topics voor document %s", doc.get("filename"))
+            _log.warning(
+                "Corrupt extracted_topics voor document %s", doc.get("filename")
+            )
             topics = []
-        result.append({
-            "id": doc["id"],
-            "filename": doc["filename"],
-            "contract_type": doc["contract_type"] or "anders",
-            "detected_topics": [
-                {
-                    "topic": t.get("topic", ""),
-                    "topic_label": database.get_topic_label(t.get("topic", "")),
-                    "passage": t.get("passage", ""),
-                    "page": t.get("page"),
-                }
-                for t in topics
-                if t.get("topic")
-            ],
-        })
+        result.append(
+            {
+                "id": doc["id"],
+                "filename": doc["filename"],
+                "contract_type": doc["contract_type"] or "anders",
+                "detected_topics": [
+                    {
+                        "topic": t.get("topic", ""),
+                        "topic_label": database.get_topic_label(t.get("topic", "")),
+                        "passage": t.get("passage", ""),
+                        "page": t.get("page"),
+                    }
+                    for t in topics
+                    if t.get("topic")
+                ],
+            }
+        )
     return {"documents": result}
 
 
@@ -461,12 +483,14 @@ async def chat(req: ChatRequest):
             key = f"{chunk.get('source_file')}|{chunk.get('topic_label')}"
             if key not in seen_keys:
                 seen_keys.add(key)
-                sources.append({
-                    "file": chunk.get("source_file", ""),
-                    "topic_label": chunk.get("topic_label", ""),
-                    "passage": chunk.get("source_passage", ""),
-                    "page": chunk.get("source_page"),
-                })
+                sources.append(
+                    {
+                        "file": chunk.get("source_file", ""),
+                        "topic_label": chunk.get("topic_label", ""),
+                        "passage": chunk.get("source_passage", ""),
+                        "page": chunk.get("source_page"),
+                    }
+                )
 
         yield f"data: {json.dumps({'done': True, 'sources': sources})}\n\n"
 
@@ -485,5 +509,9 @@ async def download_file(filename: str):
     suffix = Path(doc["filename"]).suffix.lower()
     file_path = UPLOAD_DIR / f"{doc['file_hash']}{suffix}"
     if not file_path.exists():
-        raise HTTPException(status_code=404, detail="Bestand niet meer aanwezig op disk")
-    return FileResponse(path=file_path, filename=filename, media_type="application/octet-stream")
+        raise HTTPException(
+            status_code=404, detail="Bestand niet meer aanwezig op disk"
+        )
+    return FileResponse(
+        path=file_path, filename=filename, media_type="application/octet-stream"
+    )

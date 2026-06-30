@@ -1,8 +1,8 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import Chat from "../components/Chat";
 import * as api from "../api";
+import Chat from "../components/Chat";
 
 vi.mock("../api");
 
@@ -49,13 +49,12 @@ describe("Chat component", () => {
     expect(screen.getByText("Wat is een contract?")).toBeInTheDocument();
 
     await waitFor(() => {
-      expect(
-        screen.getByText("Een contract is een overeenkomst."),
-      ).toBeInTheDocument();
+      expect(screen.getByText("Een contract is een overeenkomst.")).toBeInTheDocument();
     });
   });
 
   it("toont foutmelding bij mislukte API-aanroep", async () => {
+    // biome-ignore lint/correctness/useYield: generator throws before first yield — intentional mock
     vi.mocked(api.sendMessageStream).mockImplementation(async function* () {
       throw new Error("Verbindingsfout");
     });

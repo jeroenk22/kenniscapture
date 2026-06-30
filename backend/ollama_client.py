@@ -1,4 +1,5 @@
 """Ollama LLM client voor Kenniscapture."""
+
 import json
 import logging
 import os
@@ -147,7 +148,12 @@ async def generate_question(
         return {"question": f"Kun je meer vertellen over: {topic_label}?"}
 
 
-_GEEN_ANTWOORD = ("kan geen antwoord", "niet in staat", "geen relevante", "niet beschikbaar")
+_GEEN_ANTWOORD = (
+    "kan geen antwoord",
+    "niet in staat",
+    "geen relevante",
+    "niet beschikbaar",
+)
 
 
 def _build_chat_prompt(
@@ -157,16 +163,14 @@ def _build_chat_prompt(
 ) -> str:
     # Sla "weet het niet" antwoorden over — die sturen de LLM de verkeerde kant op
     filtered = [
-        t for t in history[-6:]
+        t
+        for t in history[-6:]
         if not (
             t.get("role") == "assistant"
             and any(s in t.get("content", "").lower() for s in _GEEN_ANTWOORD)
         )
     ]
-    conv = "".join(
-        f"{t['role'].capitalize()}: {t['content']}\n"
-        for t in filtered[-4:]
-    )
+    conv = "".join(f"{t['role'].capitalize()}: {t['content']}\n" for t in filtered[-4:])
 
     prompt = CHAT_PROMPT.format(
         knowledge_chunks=knowledge_chunks[:4000],
@@ -201,7 +205,9 @@ async def chat_stream(
                         try:
                             data = json.loads(line)
                         except json.JSONDecodeError:
-                            _log.warning("Ollama stuurde geen geldige JSON: %.100s", line)
+                            _log.warning(
+                                "Ollama stuurde geen geldige JSON: %.100s", line
+                            )
                             continue
                         token = data.get("response", "")
                         if token:
@@ -213,5 +219,9 @@ async def chat_stream(
             f"Kan geen verbinding maken met Ollama op {OLLAMA_BASE_URL}. "
             "Zorg dat Ollama draait: `ollama serve`"
         ) from exc
-    except (httpx.TimeoutException, httpx.RemoteProtocolError, httpx.HTTPStatusError) as exc:
+    except (
+        httpx.TimeoutException,
+        httpx.RemoteProtocolError,
+        httpx.HTTPStatusError,
+    ) as exc:
         raise RuntimeError(f"Ollama verbindingsfout: {exc}") from exc

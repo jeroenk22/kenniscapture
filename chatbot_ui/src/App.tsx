@@ -11,7 +11,9 @@ export default function App() {
         />
         <div>
           <h1 className="text-xl font-semibold text-gray-800">Kenniscapture — Chatbot Assistent</h1>
-          <p className="text-sm text-gray-500">Stel vragen over contracten op basis van de vastgelegde kennis</p>
+          <p className="text-sm text-gray-500">
+            Stel vragen over contracten op basis van de vastgelegde kennis
+          </p>
         </div>
       </header>
       <main className="h-[calc(100vh-80px)]">

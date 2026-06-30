@@ -14,9 +14,7 @@ describe("Message components", () => {
   });
 
   it("MessageContent accepteert className", () => {
-    const { container } = render(
-      <MessageContent className="mijn-klasse">tekst</MessageContent>,
-    );
+    const { container } = render(<MessageContent className="mijn-klasse">tekst</MessageContent>);
     expect(container.querySelector(".mijn-klasse")).toBeTruthy();
   });
 

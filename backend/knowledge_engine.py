@@ -1,4 +1,5 @@
 """Gap detectie en completion berekening voor Kenniscapture."""
+
 import logging
 
 import database
