@@ -26,11 +26,21 @@ _log = logging.getLogger("app.main")
 
 app = FastAPI(title="Kenniscapture API", version="1.0.0")
 
+# Sta alleen bekende origins toe — uitbreidbaar via CORS_ORIGINS env var
+_default_origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:8501",
+    "http://127.0.0.1:8501",
+]
+_extra = os.getenv("CORS_ORIGINS", "")
+_allowed_origins = _default_origins + [o.strip() for o in _extra.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_allowed_origins,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
 )
 
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "../uploads"))
