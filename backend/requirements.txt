@@ -16,3 +16,6 @@ aiofiles>=24.0.0
 
 # Streamlit UI
 streamlit==1.58.0
+
+# Testing
+pytest-asyncio>=1.0.0

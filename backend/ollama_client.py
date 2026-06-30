@@ -1,7 +1,9 @@
 """Ollama LLM client voor Kenniscapture."""
+
 import json
 import logging
 import os
+from collections.abc import AsyncGenerator
 
 import httpx
 
@@ -51,17 +53,22 @@ Geef terug:
   "question": "de vraag"
 }}"""
 
-CHAT_PROMPT = """Je bent een assistent die vragen beantwoordt over contracten.
-Je antwoordt ALLEEN op basis van de onderstaande kennisbank.
-Verzin niets. Als het antwoord er niet in staat, zeg dat dan eerlijk.
-Antwoord in het Nederlands.
+CHAT_PROMPT = """Je bent een assistent die uitsluitend antwoordt op basis van de KENNISBANK hieronder.
+De kennisbank bevat vraag-en-antwoord paren van een contractspecialist.
+
+STRIKTE REGELS — NOOIT overtreden:
+1. Gebruik ALLEEN informatie die letterlijk in de kennisbank staat.
+2. Voeg GEEN eigen redenering, aanvullingen of algemene kennis toe — ook niet als iemand vraagt om "uitgebreider" of "meer uitleg".
+3. Als de kennisbank onvoldoende info bevat, zeg dan letterlijk: "De kennisbank bevat hierover geen verdere informatie."
+4. Citeer altijd de bron (topic + documentnaam) aan het einde van je antwoord.
+5. Antwoord in het Nederlands. Wees beknopt en direct.
 
 KENNISBANK:
 {knowledge_chunks}
 
 VRAAG: {user_question}
 
-Geef je antwoord en vermeld aan het einde welke bronnen je gebruikte."""
+ANTWOORD (alleen op basis van bovenstaande kennisbank):"""
 
 
 async def _ollama_request(prompt: str) -> str:
@@ -72,7 +79,7 @@ async def _ollama_request(prompt: str) -> str:
         "stream": False,
     }
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=600.0) as client:
             response = await client.post(
                 f"{OLLAMA_BASE_URL}/api/generate",
                 json=payload,
@@ -141,37 +148,80 @@ async def generate_question(
         return {"question": f"Kun je meer vertellen over: {topic_label}?"}
 
 
-async def chat(
+_GEEN_ANTWOORD = (
+    "kan geen antwoord",
+    "niet in staat",
+    "geen relevante",
+    "niet beschikbaar",
+)
+
+
+def _build_chat_prompt(
     message: str,
     history: list[dict[str, str]],
     knowledge_chunks: str,
-) -> dict:
-    """RAG chatbot: beantwoord een vraag op basis van de kennisbank."""
-    conv = ""
-    for turn in history[-4:]:
-        role = turn.get("role", "user")
-        content = turn.get("content", "")
-        conv += f"{role.capitalize()}: {content}\n"
+) -> str:
+    # Sla "weet het niet" antwoorden over — die sturen de LLM de verkeerde kant op
+    filtered = [
+        t
+        for t in history[-6:]
+        if not (
+            t.get("role") == "assistant"
+            and any(s in t.get("content", "").lower() for s in _GEEN_ANTWOORD)
+        )
+    ]
+    conv = "".join(f"{t['role'].capitalize()}: {t['content']}\n" for t in filtered[-4:])
 
     prompt = CHAT_PROMPT.format(
-        knowledge_chunks=knowledge_chunks[:3000],
+        knowledge_chunks=knowledge_chunks[:4000],
         user_question=message,
     )
     if conv:
         prompt = f"Vorige context:\n{conv}\n\n{prompt}"
+    return prompt
 
-    raw = await _ollama_request(prompt)
 
-    # Eenvoudige bronextractie
-    sources: list[dict] = []
-    for line in raw.split("\n"):
-        if "bron:" in line.lower():
-            parts = line.split(":", 1)
-            if len(parts) > 1:
-                sources.append({
-                    "file": parts[1].strip(),
-                    "passage": "",
-                    "topic_label": "",
-                })
-
-    return {"answer": raw, "sources": sources}
+async def chat_stream(
+    message: str,
+    history: list[dict[str, str]],
+    knowledge_chunks: str,
+) -> AsyncGenerator[str, None]:
+    """RAG chatbot stream: yield tokens één voor één via Ollama streaming."""
+    prompt = _build_chat_prompt(message, history, knowledge_chunks)
+    payload = {
+        "model": OLLAMA_MODEL,
+        "prompt": prompt,
+        "stream": True,
+        "options": {"temperature": 0.1, "top_p": 0.9},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=600.0) as client:
+            async with client.stream(
+                "POST", f"{OLLAMA_BASE_URL}/api/generate", json=payload
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if line:
+                        try:
+                            data = json.loads(line)
+                        except json.JSONDecodeError:
+                            _log.warning(
+                                "Ollama stuurde geen geldige JSON: %.100s", line
+                            )
+                            continue
+                        token = data.get("response", "")
+                        if token:
+                            yield token
+                        if data.get("done"):
+                            break
+    except httpx.ConnectError as exc:
+        raise RuntimeError(
+            f"Kan geen verbinding maken met Ollama op {OLLAMA_BASE_URL}. "
+            "Zorg dat Ollama draait: `ollama serve`"
+        ) from exc
+    except (
+        httpx.TimeoutException,
+        httpx.RemoteProtocolError,
+        httpx.HTTPStatusError,
+    ) as exc:
+        raise RuntimeError(f"Ollama verbindingsfout: {exc}") from exc

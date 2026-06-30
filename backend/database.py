@@ -1,5 +1,5 @@
 """SQLite database setup, queries en migrations voor Kenniscapture."""
-import json
+
 import logging
 import os
 import sqlite3
@@ -89,28 +89,88 @@ def init_db() -> None:
         # Seed knowledge_topics
         topics = [
             # NDA
-            ("NDA", "aansprakelijkheid_bedrag", "Aansprakelijkheid \u2014 bedrag bepalen", 1),
-            ("NDA", "aansprakelijkheid_begrensd_vs_onbeperkt", "Aansprakelijkheid \u2014 begrensd vs onbeperkt", 1),
-            ("NDA", "aansprakelijkheid_buitenlandse_partij", "Aansprakelijkheid \u2014 buitenlandse partij", 2),
+            (
+                "NDA",
+                "aansprakelijkheid_bedrag",
+                "Aansprakelijkheid \u2014 bedrag bepalen",
+                1,
+            ),
+            (
+                "NDA",
+                "aansprakelijkheid_begrensd_vs_onbeperkt",
+                "Aansprakelijkheid \u2014 begrensd vs onbeperkt",
+                1,
+            ),
+            (
+                "NDA",
+                "aansprakelijkheid_buitenlandse_partij",
+                "Aansprakelijkheid \u2014 buitenlandse partij",
+                2,
+            ),
             ("NDA", "boeteclausule_wanneer", "Boeteclausule \u2014 wanneer opnemen", 2),
             ("NDA", "boeteclausule_bedrag", "Boeteclausule \u2014 bedrag bepalen", 3),
             ("NDA", "looptijd_bepalen", "Looptijd \u2014 hoe bepalen", 2),
-            ("NDA", "automatische_verlenging", "Automatische verlenging \u2014 wanneer", 3),
+            (
+                "NDA",
+                "automatische_verlenging",
+                "Automatische verlenging \u2014 wanneer",
+                3,
+            ),
             ("NDA", "ontbinding_termijn", "Ontbinding \u2014 met of zonder termijn", 2),
-            ("NDA", "ontbinding_directe_ontbinding", "Ontbinding \u2014 wanneer direct", 2),
+            (
+                "NDA",
+                "ontbinding_directe_ontbinding",
+                "Ontbinding \u2014 wanneer direct",
+                2,
+            ),
             ("NDA", "geheimhouding_scope", "Geheimhouding \u2014 scope bepalen", 3),
             # Arbeidscontract
             ("arbeidscontract", "proeftijd_duur", "Proeftijd \u2014 1 vs 2 maanden", 1),
-            ("arbeidscontract", "concurrentiebeding_wanneer", "Concurrentiebeding \u2014 wanneer opnemen", 1),
-            ("arbeidscontract", "concurrentiebeding_scope", "Concurrentiebeding \u2014 geografische scope", 2),
-            ("arbeidscontract", "ontslaggronden", "Ontslag \u2014 gronden en procedure", 1),
+            (
+                "arbeidscontract",
+                "concurrentiebeding_wanneer",
+                "Concurrentiebeding \u2014 wanneer opnemen",
+                1,
+            ),
+            (
+                "arbeidscontract",
+                "concurrentiebeding_scope",
+                "Concurrentiebeding \u2014 geografische scope",
+                2,
+            ),
+            (
+                "arbeidscontract",
+                "ontslaggronden",
+                "Ontslag \u2014 gronden en procedure",
+                1,
+            ),
             ("arbeidscontract", "loon_bepalen", "Loon \u2014 hoe bepalen", 2),
-            ("arbeidscontract", "overuren_regeling", "Overuren \u2014 regeling vastleggen", 3),
+            (
+                "arbeidscontract",
+                "overuren_regeling",
+                "Overuren \u2014 regeling vastleggen",
+                3,
+            ),
             # Leverancier
-            ("leverancier", "betaaltermijn_bepalen", "Betaaltermijn \u2014 hoe bepalen", 1),
+            (
+                "leverancier",
+                "betaaltermijn_bepalen",
+                "Betaaltermijn \u2014 hoe bepalen",
+                1,
+            ),
             ("leverancier", "garantie_clausule", "Garantie \u2014 clausule opnemen", 2),
-            ("leverancier", "levering_voorwaarden", "Levering \u2014 voorwaarden vastleggen", 2),
-            ("leverancier", "aansprakelijkheid_leverancier", "Aansprakelijkheid leverancier", 1),
+            (
+                "leverancier",
+                "levering_voorwaarden",
+                "Levering \u2014 voorwaarden vastleggen",
+                2,
+            ),
+            (
+                "leverancier",
+                "aansprakelijkheid_leverancier",
+                "Aansprakelijkheid leverancier",
+                1,
+            ),
         ]
         cur.executemany(
             "INSERT OR IGNORE INTO knowledge_topics "
@@ -121,6 +181,7 @@ def init_db() -> None:
 
 
 # === Query helpers ===
+
 
 def get_all_topics() -> list[dict]:
     with _conn() as con:
@@ -172,6 +233,70 @@ def save_processed_document(
             (filename, file_hash, contract_type, page_count, extracted_topics),
         )
         return cur.lastrowid
+
+
+def save_document_stub(filename: str, file_hash: str, page_count: int) -> int:
+    with _conn() as con:
+        cur = con.execute(
+            "INSERT INTO processed_documents (filename, file_hash, page_count) VALUES (?, ?, ?)",
+            (filename, file_hash, page_count),
+        )
+        return cur.lastrowid
+
+
+def update_document_analysis(
+    doc_id: int, contract_type: str, extracted_topics: str
+) -> None:
+    with _conn() as con:
+        con.execute(
+            "UPDATE processed_documents SET contract_type = ?, extracted_topics = ? WHERE id = ?",
+            (contract_type, extracted_topics, doc_id),
+        )
+
+
+def get_document_by_id(doc_id: int) -> dict | None:
+    with _conn() as con:
+        row = con.execute(
+            "SELECT * FROM processed_documents WHERE id = ?", (doc_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_all_processed_documents() -> list[dict]:
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT * FROM processed_documents ORDER BY processed_at DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_document_by_filename(filename: str) -> dict | None:
+    with _conn() as con:
+        row = con.execute(
+            "SELECT * FROM processed_documents WHERE filename = ? ORDER BY processed_at DESC LIMIT 1",
+            (filename,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_irrelevant_topics(contract_type: str) -> list[str]:
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT DISTINCT topic FROM asked_questions WHERE contract_type = ? AND irrelevant = TRUE",
+            (contract_type,),
+        ).fetchall()
+        return [r["topic"] for r in rows]
+
+
+def get_skipped_topics(contract_type: str) -> list[str]:
+    with _conn() as con:
+        rows = con.execute(
+            """SELECT DISTINCT topic FROM asked_questions
+               WHERE contract_type = ? AND skipped = TRUE
+               AND answered = FALSE AND irrelevant = FALSE""",
+            (contract_type,),
+        ).fetchall()
+        return [r["topic"] for r in rows]
 
 
 def get_asked_questions(contract_type: str, topic: str) -> list[dict]:
@@ -260,8 +385,16 @@ def save_knowledge_chunk(
                  source_file, source_passage, source_page)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (contract_type, topic, topic_label, question, answer,
-             source_file, source_passage, source_page),
+            (
+                contract_type,
+                topic,
+                topic_label,
+                question,
+                answer,
+                source_file,
+                source_passage,
+                source_page,
+            ),
         )
         return cur.lastrowid
 
@@ -288,6 +421,14 @@ def get_covered_topics() -> dict[str, list[str]]:
     for r in rows:
         result.setdefault(r["contract_type"], []).append(r["topic"])
     return result
+
+
+def reset_knowledge_bank() -> None:
+    """Verwijder alle kennis, vragen en documenten. Behoudt topics seed."""
+    with _conn() as con:
+        con.execute("DELETE FROM knowledge_chunks")
+        con.execute("DELETE FROM asked_questions")
+        con.execute("DELETE FROM processed_documents")
 
 
 if __name__ == "__main__":

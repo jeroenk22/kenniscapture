@@ -1,4 +1,6 @@
 """FastAPI backend voor Kenniscapture systeem."""
+
+import asyncio
 import hashlib
 import json
 import logging
@@ -9,6 +11,7 @@ from pathlib import Path
 import aiofiles
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 import database
@@ -24,12 +27,23 @@ _log = logging.getLogger("app.main")
 
 app = FastAPI(title="Kenniscapture API", version="1.0.0")
 
+# Sta alleen bekende origins toe — uitbreidbaar via CORS_ORIGINS env var
+_default_origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:8501",
+    "http://127.0.0.1:8501",
+]
+_extra = os.getenv("CORS_ORIGINS", "")
+_allowed_origins = _default_origins + [
+    o.strip() for o in _extra.split(",") if o.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_allowed_origins,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
 )
 
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "../uploads"))
@@ -39,10 +53,16 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 @app.on_event("startup")
 async def startup() -> None:
     database.init_db()
-    _log.info("Database geinitialiseerd — API klaar")
+    _log.info("Database geinitialiseerd — Ollama model voorladen...")
+    try:
+        await ollama_client._ollama_request("ping")
+        _log.info("Ollama model geladen — API klaar")
+    except Exception as exc:
+        _log.warning("Ollama warmup mislukt (niet fataal): %s", exc)
 
 
 # === Request modellen ===
+
 
 class GenerateQuestionRequest(BaseModel):
     document_id: int
@@ -50,6 +70,7 @@ class GenerateQuestionRequest(BaseModel):
     detected_topics: list[str]
     source_passage: str
     source_file: str
+    passages_by_topic: dict[str, str] = {}
 
 
 class SaveAnswerRequest(BaseModel):
@@ -75,6 +96,7 @@ class ChatRequest(BaseModel):
 
 # === Endpoints ===
 
+
 @app.post("/api/upload-document")
 async def upload_document(file: UploadFile = File(...)):
     content = await file.read()
@@ -82,7 +104,11 @@ async def upload_document(file: UploadFile = File(...)):
 
     existing = database.get_processed_document(file_hash)
     if existing:
-        topics = json.loads(existing["extracted_topics"] or "[]")
+        try:
+            topics = json.loads(existing["extracted_topics"] or "[]")
+        except json.JSONDecodeError:
+            _log.warning("Corrupt extracted_topics voor %s", existing.get("filename"))
+            topics = []
         _log.info("Document al verwerkt: %s", file.filename)
         return {
             "document_id": existing["id"],
@@ -96,7 +122,9 @@ async def upload_document(file: UploadFile = File(...)):
 
     suffix = Path(file.filename or "upload.pdf").suffix.lower()
     if suffix not in {".docx", ".pdf"}:
-        raise HTTPException(status_code=400, detail="Alleen .docx en .pdf bestanden worden ondersteund")
+        raise HTTPException(
+            status_code=400, detail="Alleen .docx en .pdf bestanden worden ondersteund"
+        )
 
     tmp_path = UPLOAD_DIR / f"{file_hash}{suffix}"
     async with aiofiles.open(tmp_path, "wb") as f:
@@ -108,7 +136,9 @@ async def upload_document(file: UploadFile = File(...)):
         else:
             text, passages = document_parser.parse_pdf(tmp_path)
     except Exception as exc:
-        _log.warning("Document parsing mislukt voor %s: %s", file.filename, exc, exc_info=True)
+        _log.warning(
+            "Document parsing mislukt voor %s: %s", file.filename, exc, exc_info=True
+        )
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     all_topics = database.get_all_topics()
@@ -158,6 +188,130 @@ async def upload_document(file: UploadFile = File(...)):
     }
 
 
+@app.post("/api/parse-document")
+async def parse_document(file: UploadFile = File(...)):
+    """Fase 1: upload + tekst extraheren. Geen Ollama."""
+    content = await file.read()
+    file_hash = hashlib.sha256(content).hexdigest()
+
+    existing = database.get_processed_document(file_hash)
+    if existing:
+        try:
+            topics = json.loads(existing["extracted_topics"] or "[]")
+        except json.JSONDecodeError:
+            _log.warning("Corrupt extracted_topics voor %s", existing.get("filename"))
+            topics = []
+        return {
+            "doc_id": existing["id"],
+            "filename": existing["filename"],
+            "file_hash": file_hash,
+            "already_processed": True,
+            "contract_type": existing["contract_type"],
+            "detected_topics": [
+                {
+                    "topic": item.get("topic", ""),
+                    "topic_label": database.get_topic_label(item.get("topic", "")),
+                    "passage": item.get("passage", ""),
+                    "page": item.get("page"),
+                }
+                for item in topics
+            ],
+        }
+
+    suffix = Path(file.filename or "upload.pdf").suffix.lower()
+    if suffix not in {".docx", ".pdf"}:
+        raise HTTPException(
+            status_code=400, detail="Alleen .docx en .pdf bestanden worden ondersteund"
+        )
+
+    tmp_path = UPLOAD_DIR / f"{file_hash}{suffix}"
+    async with aiofiles.open(tmp_path, "wb") as f:
+        await f.write(content)
+
+    try:
+        if suffix == ".docx":
+            _, passages = document_parser.parse_docx(tmp_path)
+        else:
+            _, passages = document_parser.parse_pdf(tmp_path)
+    except Exception as exc:
+        _log.warning("Parsing mislukt voor %s: %s", file.filename, exc, exc_info=True)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    doc_id = database.save_document_stub(
+        filename=file.filename or "upload",
+        file_hash=file_hash,
+        page_count=len(passages),
+    )
+    return {
+        "doc_id": doc_id,
+        "filename": file.filename,
+        "file_hash": file_hash,
+        "already_processed": False,
+    }
+
+
+@app.post("/api/analyze-document/{doc_id}")
+async def analyze_document_endpoint(doc_id: int):
+    """Fase 2: Ollama analyse op al geüpload document."""
+    doc = database.get_document_by_id(doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document niet gevonden")
+
+    suffix = Path(doc["filename"]).suffix.lower()
+    tmp_path = UPLOAD_DIR / f"{doc['file_hash']}{suffix}"
+    if not tmp_path.exists():
+        raise HTTPException(
+            status_code=404, detail="Bestand niet meer aanwezig op disk"
+        )
+
+    try:
+        if suffix == ".docx":
+            text, passages = document_parser.parse_docx(tmp_path)
+        else:
+            text, passages = document_parser.parse_pdf(tmp_path)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    all_topics = database.get_all_topics()
+    topics_list = [t["topic"] for t in all_topics]
+
+    try:
+        analysis = await ollama_client.analyze_document(text[:5000], topics_list)
+    except Exception as exc:
+        _log.warning("Ollama analyse mislukt: %s", exc, exc_info=True)
+        analysis = {"contract_type": "anders", "detected_topics": []}
+
+    contract_type = analysis.get("contract_type", "anders")
+    detected = analysis.get("detected_topics", [])
+
+    for item in detected:
+        passage_text = item.get("passage", "")
+        for p in passages:
+            if passage_text and passage_text[:50] in p.get("text", ""):
+                item["page"] = p.get("page")
+                break
+
+    database.update_document_analysis(
+        doc_id=doc_id,
+        contract_type=contract_type,
+        extracted_topics=json.dumps(detected),
+    )
+
+    return {
+        "doc_id": doc_id,
+        "contract_type": contract_type,
+        "detected_topics": [
+            {
+                "topic": item.get("topic", ""),
+                "topic_label": database.get_topic_label(item.get("topic", "")),
+                "passage": item.get("passage", ""),
+                "page": item.get("page"),
+            }
+            for item in detected
+        ],
+    }
+
+
 @app.post("/api/generate-question")
 async def generate_question(req: GenerateQuestionRequest):
     next_topic = knowledge_engine.get_next_question_topic(
@@ -166,13 +320,16 @@ async def generate_question(req: GenerateQuestionRequest):
     if not next_topic:
         return {"has_question": False}
 
+    # Gebruik de passage die bij dit specifieke topic hoort
+    passage = req.passages_by_topic.get(next_topic["topic"], req.source_passage)
+
     asked = database.get_asked_questions(req.contract_type, next_topic["topic"])
     asked_list = [q["question"] for q in asked]
 
     try:
         result = await ollama_client.generate_question(
             contract_type=req.contract_type,
-            passage=req.source_passage,
+            passage=passage,
             topic_label=next_topic["topic_label"],
             asked_questions=asked_list,
         )
@@ -196,7 +353,7 @@ async def generate_question(req: GenerateQuestionRequest):
         "question": question_text,
         "topic": next_topic["topic"],
         "topic_label": next_topic["topic_label"],
-        "source_passage": req.source_passage,
+        "source_passage": passage,
         "source_file": req.source_file,
         "source_page": None,
         "has_question": True,
@@ -234,6 +391,38 @@ async def get_completion():
     return knowledge_engine.calculate_completion()
 
 
+@app.get("/api/documents")
+async def get_documents():
+    docs = database.get_all_processed_documents()
+    result = []
+    for doc in docs:
+        try:
+            topics = json.loads(doc.get("extracted_topics") or "[]")
+        except json.JSONDecodeError:
+            _log.warning(
+                "Corrupt extracted_topics voor document %s", doc.get("filename")
+            )
+            topics = []
+        result.append(
+            {
+                "id": doc["id"],
+                "filename": doc["filename"],
+                "contract_type": doc["contract_type"] or "anders",
+                "detected_topics": [
+                    {
+                        "topic": t.get("topic", ""),
+                        "topic_label": database.get_topic_label(t.get("topic", "")),
+                        "passage": t.get("passage", ""),
+                        "page": t.get("page"),
+                    }
+                    for t in topics
+                    if t.get("topic")
+                ],
+            }
+        )
+    return {"documents": result}
+
+
 @app.get("/api/knowledge-bank")
 async def get_knowledge_bank():
     chunks = database.get_all_chunks()
@@ -241,26 +430,88 @@ async def get_knowledge_bank():
     return {"chunks": chunks, "open_topics": open_topics}
 
 
+@app.post("/api/reset")
+async def reset():
+    database.reset_knowledge_bank()
+    _log.info("Kennisbank gereset")
+    return {"status": "ok"}
+
+
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
     chunks = database.get_all_chunks()
+    used_chunks = chunks[:20]
+
     knowledge_str = "\n\n".join(
-        f"[{c['topic_label']} | Bron: {c['source_file']}]\n"
-        f"V: {c['question']}\nA: {c['answer']}"
-        for c in chunks[:20]
+        f"[{c['topic_label']} | Bron: {c['source_file']}"
+        + (f" (pagina {c['source_page']})" if c.get("source_page") else "")
+        + f"]\nV: {c['question']}\nA: {c['answer']}"
+        for c in used_chunks
     )
 
-    try:
-        result = await ollama_client.chat(
-            message=req.message,
-            history=req.conversation_history,
-            knowledge_chunks=knowledge_str,
-        )
-    except Exception as exc:
-        _log.warning("Chat mislukt: %s", exc, exc_info=True)
-        result = {
-            "answer": "Er is een fout opgetreden. Controleer of Ollama draait op localhost:11434.",
-            "sources": [],
-        }
+    async def event_stream():
+        full_text = ""
+        try:
+            async for token in ollama_client.chat_stream(
+                message=req.message,
+                history=req.conversation_history,
+                knowledge_chunks=knowledge_str,
+            ):
+                full_text += token
+                yield f"data: {json.dumps({'token': token})}\n\n"
+                await asyncio.sleep(0)
+        except Exception as exc:
+            _log.warning("Chat stream mislukt: %s", exc, exc_info=True)
+            error_msg = "Er is een fout opgetreden. Controleer of Ollama draait op localhost:11434."
+            yield f"data: {json.dumps({'token': error_msg})}\n\n"
+            full_text = error_msg
 
-    return result
+        # Zoek de meest relevante chunks op basis van trefwoorden in het antwoord
+        answer_words = {w.lower() for w in full_text.split() if len(w) > 4}
+        seen_keys: set[str] = set()
+        scored: list[tuple[int, dict]] = []
+        for chunk in used_chunks:
+            topic_words = set((chunk.get("topic_label") or "").lower().split())
+            q_words = set((chunk.get("question") or "").lower().split())
+            a_words = set((chunk.get("answer") or "").lower().split())
+            matches = len(answer_words & (topic_words | q_words | a_words))
+            scored.append((matches, chunk))
+        scored.sort(key=lambda x: -x[0])
+
+        sources = []
+        for _, chunk in scored[:5]:
+            key = f"{chunk.get('source_file')}|{chunk.get('topic_label')}"
+            if key not in seen_keys:
+                seen_keys.add(key)
+                sources.append(
+                    {
+                        "file": chunk.get("source_file", ""),
+                        "topic_label": chunk.get("topic_label", ""),
+                        "passage": chunk.get("source_passage", ""),
+                        "page": chunk.get("source_page"),
+                    }
+                )
+
+        yield f"data: {json.dumps({'done': True, 'sources': sources})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/api/download/{filename:path}")
+async def download_file(filename: str):
+    doc = database.get_document_by_filename(filename)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Bestand niet gevonden in database")
+    suffix = Path(doc["filename"]).suffix.lower()
+    file_path = UPLOAD_DIR / f"{doc['file_hash']}{suffix}"
+    if not file_path.exists():
+        raise HTTPException(
+            status_code=404, detail="Bestand niet meer aanwezig op disk"
+        )
+    return FileResponse(
+        path=file_path, filename=filename, media_type="application/octet-stream"
+    )

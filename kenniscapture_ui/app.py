@@ -1,6 +1,8 @@
 """Streamlit kenniscapture tool — Tabblad 1: Kenniscapture | Tabblad 2: Kennisbank."""
 import logging
 import os
+import time
+from pathlib import Path
 
 import httpx
 import streamlit as st
@@ -11,23 +13,43 @@ _log = logging.getLogger("kenniscapture_ui")
 API_BASE = os.getenv("API_BASE_URL", "http://localhost:8000")
 
 st.set_page_config(
-    page_title="Kenniscapture",
+    page_title="Kenniscapture — Ten Brinke",
     page_icon="📝",
     layout="wide",
 )
 
+# === Header met logo ===
+_logo_path = Path(__file__).parent / "assets" / "tenbrinke-logo.png"
+_col_logo, _col_title = st.columns([1, 6])
+with _col_logo:
+    if _logo_path.exists():
+        st.image(str(_logo_path), width=80)
+with _col_title:
+    st.markdown("## Kenniscapture Systeem")
+    st.caption("Kennisoverdracht · Ten Brinke")
+
+st.divider()
+
 
 # === Hulpfuncties ===
+
+def _backend_bereikbaar() -> bool:
+    try:
+        httpx.get(f"{API_BASE}/docs", timeout=2.0)
+        return True
+    except Exception:
+        return False
+
 
 def _api(method: str, path: str, **kwargs) -> dict:
     """Roep de FastAPI backend aan."""
     url = f"{API_BASE}{path}"
     try:
-        resp = httpx.request(method, url, timeout=120.0, **kwargs)
+        resp = httpx.request(method, url, timeout=600.0, **kwargs)
         resp.raise_for_status()
         return resp.json()
     except httpx.ConnectError:
-        st.error("❌ Kan backend niet bereiken. Zorg dat de FastAPI server draait op poort 8000.")
+        st.error("❌ Kan backend niet bereiken. Herstart via ./start.sh")
         return {}
     except Exception as exc:
         st.error(f"❌ API fout: {exc}")
@@ -40,6 +62,8 @@ def _init_session():
         "current_question": None,
         "pending_questions": [],
         "upload_result": None,
+        "upload_queue": [],       # lijst van {name, data, type} wachtend op analyse
+        "upload_results": [],     # afgeronde resultaten om te tonen
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -48,11 +72,56 @@ def _init_session():
 
 _init_session()
 
+# === Wacht tot backend klaar is ===
+_MAX_WACHT = 90
+
+if "backend_start" not in st.session_state:
+    st.session_state.backend_start = time.time()
+
+if not _backend_bereikbaar():
+    verstreken = time.time() - st.session_state.backend_start
+    if verstreken > _MAX_WACHT:
+        st.error("❌ Backend niet bereikbaar na 90 seconden. Controleer of `./start.sh` correct draait.")
+        st.stop()
+    else:
+        restant = int(_MAX_WACHT - verstreken)
+        with st.spinner(f"⏳ Services starten op... ({restant}s)"):
+            time.sleep(2)
+        st.rerun()
+else:
+    st.session_state.pop("backend_start", None)
+
 
 # === Voortgang ophalen ===
 @st.cache_data(ttl=5)
 def _get_completion() -> dict:
     return _api("GET", "/api/completion") or {}
+
+
+# === Sidebar ===
+with st.sidebar:
+    st.markdown("### ⚙️ Beheer")
+    st.divider()
+    st.markdown("**Kennisbank resetten**")
+    st.caption("Verwijdert alle antwoorden, vragen en verwerkte documenten.")
+    if st.button("🗑️ Reset kennisbank", type="secondary", use_container_width=True):
+        st.session_state["reset_confirm"] = True
+
+    if st.session_state.get("reset_confirm"):
+        st.warning("Weet je het zeker? Dit verwijdert **alles**.")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("✅ Ja, reset", use_container_width=True):
+                result = _api("POST", "/api/reset")
+                if result:
+                    st.session_state.clear()
+                    _get_completion.clear()
+                    st.success("✅ Kennisbank gereset.")
+                    st.rerun()
+        with col2:
+            if st.button("❌ Annuleer", use_container_width=True):
+                st.session_state["reset_confirm"] = False
+                st.rerun()
 
 
 # === Tabbladen ===
@@ -98,25 +167,113 @@ with tab1:
     )
 
     if uploaded_files and st.button("📤 Analyseer documenten", type="primary"):
-        for uploaded_file in uploaded_files:
-            with st.spinner(f"Analyseren: {uploaded_file.name}..."):
-                result = _api(
-                    "POST",
-                    "/api/upload-document",
-                    files={"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)},
-                )
-                if result:
-                    if result.get("already_processed"):
-                        st.info(f"ℹ️ {uploaded_file.name} was al eerder verwerkt.")
-                    else:
-                        st.success(
-                            f"✅ {uploaded_file.name} geanalyseerd — "
-                            f"contracttype: **{result.get('contract_type', '?')}** | "
-                            f"{len(result.get('detected_topics', []))} topics gevonden"
-                        )
-                    st.session_state.upload_result = result
-                    st.session_state.current_document = result
-                    st.session_state.current_question = None
+        st.session_state.upload_queue = [
+            {"name": f.name, "data": f.getvalue(), "type": f.type}
+            for f in uploaded_files
+        ]
+        st.session_state.upload_results = []
+        st.rerun()
+
+    # Toon eerdere resultaten
+    for res in st.session_state.upload_results:
+        if res.get("skipped"):
+            st.info(f"ℹ️ {res['filename']} was al eerder verwerkt.")
+        elif res.get("warning"):
+            st.warning(res["warning"])
+        else:
+            st.success(
+                f"✅ {res['filename']} geanalyseerd — "
+                f"contracttype: **{res.get('contract_type', '?')}** | "
+                f"{len(res.get('detected_topics', []))} topics gevonden"
+            )
+
+    # Verwerk één document per rerun uit de queue
+    if st.session_state.upload_queue:
+        item = st.session_state.upload_queue[0]
+        total = len(st.session_state.upload_queue) + len(st.session_state.upload_results)
+        done = len(st.session_state.upload_results)
+
+        st.markdown(f"**Verwerken {done + 1}/{total}: {item['name']}**")
+        prog = st.progress(0)
+        status = st.empty()
+
+        # Fase 1 — upload + tekst extraheren
+        status.caption("📤 Bestand uploaden en tekst extraheren...")
+        prog.progress(15)
+        parse_result = _api(
+            "POST",
+            "/api/parse-document",
+            files={"file": (item["name"], item["data"], item["type"])},
+        )
+
+        if not parse_result:
+            prog.progress(100)
+            st.session_state.upload_results.append({"filename": item["name"], "warning": f"⚠️ {item['name']}: upload mislukt."})
+            st.session_state.upload_queue.pop(0)
+            st.rerun()
+
+        prog.progress(40)
+        already_done = parse_result.get("already_processed") and parse_result.get("detected_topics")
+
+        if already_done:
+            prog.progress(100)
+            result = {
+                "filename": parse_result["filename"],
+                "document_id": parse_result["doc_id"],
+                "contract_type": parse_result.get("contract_type"),
+                "detected_topics": parse_result.get("detected_topics", []),
+                "skipped": True,
+            }
+            st.session_state.current_document = result
+            st.session_state.current_question = None
+        else:
+            # Fase 2 — Ollama analyse
+            status.caption("🤖 AI herkent contracttype en topics — even geduld...")
+            prog.progress(45)
+            analysis = _api("POST", f"/api/analyze-document/{parse_result['doc_id']}")
+
+            if not analysis or not analysis.get("detected_topics"):
+                prog.progress(100)
+                st.session_state.upload_results.append({
+                    "filename": item["name"],
+                    "warning": f"⚠️ {item['name']}: analyse onvolledig. Upload opnieuw om te herproberen.",
+                })
+                st.session_state.upload_queue.pop(0)
+                st.rerun()
+
+            prog.progress(100)
+            result = {
+                "filename": parse_result["filename"],
+                "document_id": parse_result["doc_id"],
+                "contract_type": analysis.get("contract_type", "anders"),
+                "detected_topics": analysis.get("detected_topics", []),
+            }
+            st.session_state.current_document = result
+            st.session_state.current_question = None
+
+        st.session_state.upload_results.append(result)
+        st.session_state.upload_queue.pop(0)
+        st.rerun()
+
+    # Automatisch doorgaan met eerder document als sessie leeg is
+    if (
+        not st.session_state.current_document
+        and not st.session_state.upload_queue
+        and not st.session_state.upload_results
+    ):
+        docs_data = _api("GET", "/api/documents")
+        docs = docs_data.get("documents", [])
+        if docs:
+            # Meest recente document (al gesorteerd op processed_at DESC)
+            latest = docs[0]
+            if latest.get("detected_topics"):
+                st.session_state.current_document = {
+                    "filename": latest["filename"],
+                    "document_id": latest["id"],
+                    "contract_type": latest["contract_type"],
+                    "detected_topics": latest["detected_topics"],
+                }
+                st.rerun()
 
     # Vraag-antwoord sectie
     if st.session_state.current_document:
@@ -126,12 +283,13 @@ with tab1:
 
         # Laad volgende vraag als er geen huidige is
         if not st.session_state.current_question:
-            detected_topics = [
-                t.get("topic", "") for t in doc.get("detected_topics", [])
-            ]
-            passage = ""
-            if doc.get("detected_topics"):
-                passage = doc["detected_topics"][0].get("passage", "")
+            detected_topics_full = doc.get("detected_topics", [])
+            detected_topic_keys = [t.get("topic", "") for t in detected_topics_full]
+            # Passages per topic zodat de backend de juiste kan opzoeken
+            passages_by_topic = {
+                t.get("topic", ""): t.get("passage", "")
+                for t in detected_topics_full
+            }
 
             with st.spinner("Volgende vraag ophalen..."):
                 question_data = _api(
@@ -140,26 +298,53 @@ with tab1:
                     json={
                         "document_id": doc.get("document_id", 0),
                         "contract_type": doc.get("contract_type", "anders"),
-                        "detected_topics": detected_topics,
-                        "source_passage": passage,
+                        "detected_topics": detected_topic_keys,
+                        "source_passage": "",
+                        "passages_by_topic": passages_by_topic,
                         "source_file": doc.get("filename", ""),
                     },
                 )
                 if question_data and question_data.get("has_question"):
                     st.session_state.current_question = question_data
                 else:
-                    st.success("🎉 Alle vragen voor dit document zijn beantwoord!")
+                    st.success(f"🎉 Alle vragen voor **{doc.get('filename', 'dit document')}** zijn beantwoord!")
+                    st.session_state.current_document = None
                     st.session_state.current_question = None
+                    # Controleer of er nog andere documenten zijn met openstaande vragen
+                    docs_data = _api("GET", "/api/documents")
+                    remaining = [
+                        d for d in docs_data.get("documents", [])
+                        if d["filename"] != doc.get("filename") and d.get("detected_topics")
+                    ]
+                    if remaining:
+                        next_doc = remaining[0]
+                        st.info(f"📄 Doorgaan met vragen voor **{next_doc['filename']}**...")
+                        st.session_state.current_document = {
+                            "filename": next_doc["filename"],
+                            "document_id": next_doc["id"],
+                            "contract_type": next_doc["contract_type"],
+                            "detected_topics": next_doc["detected_topics"],
+                        }
+                        st.rerun()
 
         if st.session_state.current_question:
             q = st.session_state.current_question
 
-            # Toon gevonden passage
-            if q.get("source_passage"):
+            # Altijd bronverwijzing tonen
+            source_file = q.get("source_file", "")
+            source_page = q.get("source_page")
+            source_passage = q.get("source_passage", "")
+
+            if source_passage:
+                page_label = f" · pagina {source_page}" if source_page else ""
                 st.info(
-                    f"📄 **Gevonden in contract** ({q.get('source_file', '')}):\n\n"
-                    f'*"{q["source_passage"]}"*'
+                    f"📄 **Gevonden in:** {source_file}{page_label}\n\n"
+                    f'*"{source_passage}"*'
                 )
+            elif source_file:
+                st.caption(f"📄 Vraag gebaseerd op: **{source_file}** — onderwerp: {q.get('topic_label', '')}")
+            else:
+                st.caption(f"📄 Algemene kennisbankvraag — onderwerp: {q.get('topic_label', '')}")
 
             # Vraagkaart
             st.markdown(f"### {q.get('topic_label', 'Vraag')}")

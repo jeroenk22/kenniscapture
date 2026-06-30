@@ -1,4 +1,5 @@
 """Document parser voor Word (.docx) en PDF bestanden."""
+
 import logging
 from pathlib import Path
 
@@ -57,5 +58,9 @@ def parse_pdf(file_path: Path) -> tuple[str, list[dict]]:
                         passages.append({"text": paragraph, "page": page_num})
 
     full_text = "\n".join(full_text_parts)
-    _log.info("Gelezen PDF: %d passages over %d pagina's", len(passages), len(pdf.pages) if passages else 0)
+    _log.info(
+        "Gelezen PDF: %d passages over %d pagina's",
+        len(passages),
+        len(pdf.pages) if passages else 0,
+    )
     return full_text, passages
