@@ -18,19 +18,30 @@ def get_next_question_topic(
     """
     all_topics = database.get_topics_for_contract(contract_type)
     covered = database.get_covered_topics().get(contract_type, [])
-    open_topics = [t for t in all_topics if t["topic"] not in covered]
+    irrelevant = database.get_irrelevant_topics(contract_type)
+    skipped = database.get_skipped_topics(contract_type)
+
+    # Nooit vragen: al beantwoord of als niet-relevant gemarkeerd
+    excluded = set(covered) | set(irrelevant)
+    open_topics = [t for t in all_topics if t["topic"] not in excluded]
 
     if not open_topics:
         return None
 
-    # Intersecteer met topics uit huidig document
+    # Splits in niet-overgeslagen en overgeslagen (Straks)
+    fresh = [t for t in open_topics if t["topic"] not in skipped]
+    deferred = [t for t in open_topics if t["topic"] in skipped]
+
+    # Gebruik eerst verse topics, daarna pas uitgestelde
+    candidates = fresh if fresh else deferred
+
+    # Geef voorkeur aan topics die in dit document gevonden zijn
     if detected_topics:
-        intersection = [t for t in open_topics if t["topic"] in detected_topics]
+        intersection = [t for t in candidates if t["topic"] in detected_topics]
         if intersection:
             return intersection[0]
 
-    # Fallback: eerste open topic voor dit contracttype
-    return open_topics[0]
+    return candidates[0]
 
 
 def calculate_completion() -> dict:

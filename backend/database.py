@@ -1,5 +1,4 @@
 """SQLite database setup, queries en migrations voor Kenniscapture."""
-import json
 import logging
 import os
 import sqlite3
@@ -174,6 +173,68 @@ def save_processed_document(
         return cur.lastrowid
 
 
+def save_document_stub(filename: str, file_hash: str, page_count: int) -> int:
+    with _conn() as con:
+        cur = con.execute(
+            "INSERT INTO processed_documents (filename, file_hash, page_count) VALUES (?, ?, ?)",
+            (filename, file_hash, page_count),
+        )
+        return cur.lastrowid
+
+
+def update_document_analysis(doc_id: int, contract_type: str, extracted_topics: str) -> None:
+    with _conn() as con:
+        con.execute(
+            "UPDATE processed_documents SET contract_type = ?, extracted_topics = ? WHERE id = ?",
+            (contract_type, extracted_topics, doc_id),
+        )
+
+
+def get_document_by_id(doc_id: int) -> dict | None:
+    with _conn() as con:
+        row = con.execute(
+            "SELECT * FROM processed_documents WHERE id = ?", (doc_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_all_processed_documents() -> list[dict]:
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT * FROM processed_documents ORDER BY processed_at DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_document_by_filename(filename: str) -> dict | None:
+    with _conn() as con:
+        row = con.execute(
+            "SELECT * FROM processed_documents WHERE filename = ? ORDER BY processed_at DESC LIMIT 1",
+            (filename,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_irrelevant_topics(contract_type: str) -> list[str]:
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT DISTINCT topic FROM asked_questions WHERE contract_type = ? AND irrelevant = TRUE",
+            (contract_type,),
+        ).fetchall()
+        return [r["topic"] for r in rows]
+
+
+def get_skipped_topics(contract_type: str) -> list[str]:
+    with _conn() as con:
+        rows = con.execute(
+            """SELECT DISTINCT topic FROM asked_questions
+               WHERE contract_type = ? AND skipped = TRUE
+               AND answered = FALSE AND irrelevant = FALSE""",
+            (contract_type,),
+        ).fetchall()
+        return [r["topic"] for r in rows]
+
+
 def get_asked_questions(contract_type: str, topic: str) -> list[dict]:
     with _conn() as con:
         rows = con.execute(
@@ -288,6 +349,14 @@ def get_covered_topics() -> dict[str, list[str]]:
     for r in rows:
         result.setdefault(r["contract_type"], []).append(r["topic"])
     return result
+
+
+def reset_knowledge_bank() -> None:
+    """Verwijder alle kennis, vragen en documenten. Behoudt topics seed."""
+    with _conn() as con:
+        con.execute("DELETE FROM knowledge_chunks")
+        con.execute("DELETE FROM asked_questions")
+        con.execute("DELETE FROM processed_documents")
 
 
 if __name__ == "__main__":

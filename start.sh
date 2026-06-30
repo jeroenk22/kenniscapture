@@ -3,18 +3,27 @@
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Laad config.env als die bestaat
+if [ -f "$ROOT_DIR/config.env" ]; then
+    set -a
+    source "$ROOT_DIR/config.env"
+    set +a
+fi
+
+# Standaardwaarden
+HOST="${HOST:-127.0.0.1}"
+PORT_BACKEND="${PORT_BACKEND:-8000}"
+PORT_STREAMLIT="${PORT_STREAMLIT:-8501}"
+PORT_CHATBOT="${PORT_CHATBOT:-5173}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-llama3.1:8b}"
+DATABASE_PATH="${DATABASE_PATH:-../data/kennisbank.db}"
+UPLOAD_DIR="${UPLOAD_DIR:-../uploads}"
+
 # Bepaal venv activatie pad
 if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
     VENV="$ROOT_DIR/backend/venv/Scripts/activate"
 else
     VENV="$ROOT_DIR/backend/venv/bin/activate"
-fi
-
-# Controleer Ollama
-if ! command -v ollama &> /dev/null; then
-    echo "⚠️  Ollama niet gevonden. Installeer via: https://ollama.com"
-    echo "   Daarna: ollama pull llama3.1:8b"
-    exit 1
 fi
 
 echo "🦙 Ollama starten..."
@@ -23,22 +32,44 @@ ollama serve &> /dev/null &
 # Activeer venv
 source "$VENV"
 
-echo "🚀 FastAPI backend starten (poort 8000)..."
-(cd "$ROOT_DIR/backend" && uvicorn main:app --reload --port 8000) &
+export DATABASE_PATH UPLOAD_DIR OLLAMA_MODEL
 
-echo "📝 Streamlit kenniscapture starten (poort 8501)..."
-(cd "$ROOT_DIR/kenniscapture_ui" && streamlit run app.py --server.port 8501) &
+echo "🚀 FastAPI backend starten (poort $PORT_BACKEND)..."
+(cd "$ROOT_DIR/backend" && uvicorn main:app --reload --host "$HOST" --port "$PORT_BACKEND") &
 
-echo "⚛️  React chatbot starten (poort 5173)..."
-(cd "$ROOT_DIR/chatbot_ui" && pnpm dev) &
+echo "📝 Streamlit kenniscapture starten (poort $PORT_STREAMLIT)..."
+(cd "$ROOT_DIR/kenniscapture_ui" && streamlit run app.py \
+    --server.port "$PORT_STREAMLIT" \
+    --server.address "$HOST") &
+
+echo "⚛️  React chatbot starten (poort $PORT_CHATBOT)..."
+VITE_HOST_FLAG=""
+if [ "$HOST" = "0.0.0.0" ]; then
+    VITE_HOST_FLAG="--host"
+fi
+(cd "$ROOT_DIR/chatbot_ui" && pnpm dev --port "$PORT_CHATBOT" $VITE_HOST_FLAG) &
 
 sleep 2
+
+# Toon juiste URLs op basis van HOST
+if [ "$HOST" = "0.0.0.0" ]; then
+    # Bepaal lokaal IP voor weergave
+    if command -v hostname &>/dev/null; then
+        LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "192.168.x.x")
+    else
+        LOCAL_IP="192.168.x.x"
+    fi
+    URL_BASE="http://$LOCAL_IP"
+else
+    URL_BASE="http://localhost"
+fi
+
 echo ""
 echo "=================================================="
 echo "  Alle services draaien:"
-echo "  📝 Kenniscapture:  http://localhost:8501"
-echo "  💬 Chatbot:        http://localhost:5173"
-echo "  📡 API docs:       http://localhost:8000/docs"
+echo "  📝 Kenniscapture:  $URL_BASE:$PORT_STREAMLIT"
+echo "  💬 Chatbot:        $URL_BASE:$PORT_CHATBOT"
+echo "  📡 API docs:       $URL_BASE:$PORT_BACKEND/docs"
 echo "  🦙 Ollama:         http://localhost:11434"
 echo "=================================================="
 echo ""
