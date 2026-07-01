@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import html
 import json
 import logging
 import os
@@ -10,10 +11,11 @@ import urllib.parse
 import uuid
 from pathlib import Path
 
+import mammoth
 import aiofiles
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 import database
@@ -527,6 +529,36 @@ async def download_file(filename: str):
                 "Content-Security-Policy": "default-src 'none'; sandbox",
             },
         )
+    if suffix == ".docx":
+        try:
+            with open(file_path, "rb") as f:
+                result = mammoth.convert_to_html(f)
+            html_body = result.value
+        except Exception as exc:
+            _log.warning("DOCX→HTML conversie mislukt voor %s: %s", filename, exc)
+            raise HTTPException(
+                status_code=422, detail="Bestand kan niet worden weergegeven"
+            ) from exc
+        escaped_name = html.escape(filename)
+        html_page = f"""<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <title>{escaped_name}</title>
+  <style>
+    body {{ font-family: Calibri, Arial, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 24px; line-height: 1.6; color: #222; }}
+    table {{ border-collapse: collapse; width: 100%; margin: 1em 0; }}
+    td, th {{ border: 1px solid #ccc; padding: 6px 10px; }}
+    h1, h2, h3 {{ color: #1a1a2e; }}
+    p {{ margin: 0.5em 0; }}
+  </style>
+</head>
+<body>
+  <h2 style="color:#666;font-size:0.9em;border-bottom:1px solid #eee;padding-bottom:8px">{escaped_name}</h2>
+  {html_body}
+</body>
+</html>"""
+        return HTMLResponse(content=html_page)
     return FileResponse(
         path=file_path,
         headers={

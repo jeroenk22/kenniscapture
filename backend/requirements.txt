@@ -14,6 +14,9 @@ httpx>=0.28.0
 python-dotenv>=1.0.0
 aiofiles>=24.0.0
 
+# Document weergave
+mammoth>=1.8.0
+
 # Streamlit UI
 streamlit==1.58.0
 
