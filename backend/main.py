@@ -512,6 +512,13 @@ async def download_file(filename: str):
         raise HTTPException(
             status_code=404, detail="Bestand niet meer aanwezig op disk"
         )
+    if suffix == ".pdf":
+        return FileResponse(
+            path=file_path,
+            filename=filename,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'inline; filename="{filename}"'},
+        )
     return FileResponse(
         path=file_path, filename=filename, media_type="application/octet-stream"
     )
