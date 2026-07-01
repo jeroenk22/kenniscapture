@@ -5,6 +5,8 @@ import hashlib
 import json
 import logging
 import os
+import re
+import urllib.parse
 import uuid
 from pathlib import Path
 
@@ -512,13 +514,23 @@ async def download_file(filename: str):
         raise HTTPException(
             status_code=404, detail="Bestand niet meer aanwezig op disk"
         )
+    # Sanitize bestandsnaam voor Content-Disposition header (RFC 6266)
+    safe_name = re.sub(r'["\r\n\\]', "", filename)
+    encoded_name = urllib.parse.quote(filename)
     if suffix == ".pdf":
         return FileResponse(
             path=file_path,
-            filename=filename,
             media_type="application/pdf",
-            headers={"Content-Disposition": f'inline; filename="{filename}"'},
+            headers={
+                "Content-Disposition": f"inline; filename=\"{safe_name}\"; filename*=UTF-8''{encoded_name}",
+                "X-Content-Type-Options": "nosniff",
+                "Content-Security-Policy": "default-src 'none'; sandbox",
+            },
         )
     return FileResponse(
-        path=file_path, filename=filename, media_type="application/octet-stream"
+        path=file_path,
+        headers={
+            "Content-Disposition": f"attachment; filename=\"{safe_name}\"; filename*=UTF-8''{encoded_name}",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
