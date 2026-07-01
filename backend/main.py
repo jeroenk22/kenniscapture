@@ -540,6 +540,7 @@ async def download_file(filename: str, raw: bool = False):
                 status_code=422, detail="Bestand kan niet worden weergegeven"
             ) from exc
         escaped_name = html.escape(filename)
+        raw_url = f"/api/download/{encoded_name}?raw=true"
         html_page = f"""<!DOCTYPE html>
 <html lang="nl">
 <head>
@@ -551,10 +552,16 @@ async def download_file(filename: str, raw: bool = False):
     td, th {{ border: 1px solid #ccc; padding: 6px 10px; }}
     h1, h2, h3 {{ color: #1a1a2e; }}
     p {{ margin: 0.5em 0; }}
+    .preview-header {{ display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #eee; padding-bottom: 8px; }}
+    .preview-header span {{ color: #666; font-size: 0.9em; }}
+    .download-btn {{ color: #fff; background: #e74c3c; padding: 6px 14px; border-radius: 4px; text-decoration: none; font-size: 0.85em; }}
   </style>
 </head>
 <body>
-  <h2 style="color:#666;font-size:0.9em;border-bottom:1px solid #eee;padding-bottom:8px">{escaped_name}</h2>
+  <div class="preview-header">
+    <span>{escaped_name}</span>
+    <a class="download-btn" href="{raw_url}">⬇️ Origineel downloaden</a>
+  </div>
   {html_body}
 </body>
 </html>"""

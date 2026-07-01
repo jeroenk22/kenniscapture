@@ -344,11 +344,10 @@ with tab1:
                 safe_page = html.escape(page_label, quote=True)
                 encoded_file = urllib.parse.quote(source_file, safe="")
                 preview_url = f"{API_BASE}/api/download/{encoded_file}"
-                raw_url = f"{API_BASE}/api/download/{encoded_file}?raw=true"
                 st.markdown(
                     f'📄 <strong>Gevonden in:</strong> '
-                    f'<a href="#" onclick="window.open(\'{preview_url}\', \'preview\', \'width=900,height=800\'); return false;">{safe_file}</a>'
-                    f'{safe_page} · <a href="{raw_url}">⬇️ origineel downloaden</a>'
+                    f'<a href="{preview_url}" target="_blank">{safe_file}</a>'
+                    f'{safe_page}'
                     f'<br><em>"{safe_passage}"</em>',
                     unsafe_allow_html=True,
                 )
@@ -357,11 +356,9 @@ with tab1:
                 safe_topic = html.escape(q.get("topic_label", ""), quote=True)
                 encoded_file = urllib.parse.quote(source_file, safe="")
                 preview_url = f"{API_BASE}/api/download/{encoded_file}"
-                raw_url = f"{API_BASE}/api/download/{encoded_file}?raw=true"
                 st.markdown(
                     f'📄 Vraag gebaseerd op: '
-                    f'<a href="#" onclick="window.open(\'{preview_url}\', \'preview\', \'width=900,height=800\'); return false;"><strong>{safe_file}</strong></a>'
-                    f' · <a href="{raw_url}">⬇️ origineel downloaden</a>'
+                    f'<a href="{preview_url}" target="_blank"><strong>{safe_file}</strong></a>'
                     f" — onderwerp: {safe_topic}",
                     unsafe_allow_html=True,
                 )
