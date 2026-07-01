@@ -66,6 +66,7 @@ def _init_session():
         "upload_result": None,
         "upload_queue": [],       # lijst van {name, data, type} wachtend op analyse
         "upload_results": [],     # afgeronde resultaten om te tonen
+        "exhausted_documents": [],  # bestandsnamen zonder nog te stellen vragen (voorkomt ping-pong tussen documenten)
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -310,13 +311,17 @@ with tab1:
                     st.session_state.current_question = question_data
                 else:
                     st.success(f"🎉 Alle vragen voor **{doc.get('filename', 'dit document')}** zijn beantwoord!")
+                    if doc.get("filename") not in st.session_state.exhausted_documents:
+                        st.session_state.exhausted_documents.append(doc.get("filename"))
                     st.session_state.current_document = None
                     st.session_state.current_question = None
                     # Controleer of er nog andere documenten zijn met openstaande vragen
+                    # (nooit al uitgeputte documenten opnieuw proberen — voorkomt een oneindige lus)
                     docs_data = _api("GET", "/api/documents")
                     remaining = [
                         d for d in docs_data.get("documents", [])
-                        if d["filename"] != doc.get("filename") and d.get("detected_topics")
+                        if d["filename"] not in st.session_state.exhausted_documents
+                        and d.get("detected_topics")
                     ]
                     if remaining:
                         next_doc = remaining[0]
