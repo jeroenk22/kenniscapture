@@ -558,7 +558,14 @@ async def download_file(filename: str):
   {html_body}
 </body>
 </html>"""
-        return HTMLResponse(content=html_page)
+        return HTMLResponse(
+            content=html_page,
+            headers={
+                "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox",
+                "X-Content-Type-Options": "nosniff",
+                "Referrer-Policy": "no-referrer",
+            },
+        )
     return FileResponse(
         path=file_path,
         headers={
