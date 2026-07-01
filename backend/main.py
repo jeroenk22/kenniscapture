@@ -526,7 +526,7 @@ async def download_file(filename: str, raw: bool = False):
             headers={
                 "Content-Disposition": f"inline; filename=\"{safe_name}\"; filename*=UTF-8''{encoded_name}",
                 "X-Content-Type-Options": "nosniff",
-                "Content-Security-Policy": "default-src 'none'; sandbox",
+                "Content-Security-Policy": "default-src 'none'; script-src 'none'",
             },
         )
     if suffix == ".docx" and not raw:
