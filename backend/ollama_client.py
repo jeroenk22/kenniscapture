@@ -43,10 +43,15 @@ Context:
 
 Genereer een concrete vraag die vraagt naar de WAAROM achter de passage.
 De vraag moet:
-- Direct gerelateerd zijn aan de passage
+- Direct gerelateerd zijn aan de passage — verwijs alleen naar wat er
+  daadwerkelijk in de passage staat
 - Vragen naar beslislogica, niet naar feiten
 - Kort zijn (max 2 zinnen)
 - In het Nederlands zijn
+
+BELANGRIJK: Doe GEEN aannames over de inhoud van het contract die niet
+letterlijk uit de passage blijken. Verzin geen clausules, bedragen of
+voorwaarden die niet gegeven zijn.
 
 Geef terug:
 {{

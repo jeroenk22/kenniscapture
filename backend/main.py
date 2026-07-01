@@ -326,6 +326,14 @@ async def generate_question(req: GenerateQuestionRequest):
 
     # Gebruik de passage die bij dit specifieke topic hoort
     passage = req.passages_by_topic.get(next_topic["topic"], req.source_passage)
+    if not passage or not passage.strip():
+        # Geen echte contractpassage beschikbaar — nooit een vraag verzinnen
+        # zonder gegronde context uit het document.
+        _log.warning(
+            "Geen passage gevonden voor topic %s — vraag overgeslagen",
+            next_topic["topic"],
+        )
+        return {"has_question": False}
 
     asked = database.get_asked_questions(req.contract_type, next_topic["topic"])
     asked_list = [q["question"] for q in asked]

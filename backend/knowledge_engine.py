@@ -14,9 +14,13 @@ def get_next_question_topic(
     """
     Bepaal het volgende onderwerp om een vraag over te stellen.
 
-    Prioriteit: hoge prioriteit topics eerst, nooit al gedekte topics.
-    Intersecteer eerst met detected_topics uit het huidige document.
+    Alleen onderwerpen die daadwerkelijk in het huidige document zijn
+    gedetecteerd komen in aanmerking — zo blijft elke vraag herleidbaar
+    tot een echte passage uit het geuploade contract.
     """
+    if not detected_topics:
+        return None
+
     all_topics = database.get_topics_for_contract(contract_type)
     covered = database.get_covered_topics().get(contract_type, [])
     irrelevant = database.get_irrelevant_topics(contract_type)
@@ -26,23 +30,18 @@ def get_next_question_topic(
     excluded = set(covered) | set(irrelevant)
     open_topics = [t for t in all_topics if t["topic"] not in excluded]
 
-    if not open_topics:
+    # Alleen onderwerpen die in dit document zijn gevonden
+    relevant = [t for t in open_topics if t["topic"] in detected_topics]
+    if not relevant:
         return None
 
     # Splits in niet-overgeslagen en overgeslagen (Straks)
-    fresh = [t for t in open_topics if t["topic"] not in skipped]
-    deferred = [t for t in open_topics if t["topic"] in skipped]
+    fresh = [t for t in relevant if t["topic"] not in skipped]
+    deferred = [t for t in relevant if t["topic"] in skipped]
 
     # Gebruik eerst verse topics, daarna pas uitgestelde
     candidates = fresh if fresh else deferred
-
-    # Geef voorkeur aan topics die in dit document gevonden zijn
-    if detected_topics:
-        intersection = [t for t in candidates if t["topic"] in detected_topics]
-        if intersection:
-            return intersection[0]
-
-    return candidates[0]
+    return candidates[0] if candidates else None
 
 
 def calculate_completion() -> dict:
