@@ -506,7 +506,7 @@ async def chat(req: ChatRequest):
 
 
 @app.get("/api/download/{filename:path}")
-async def download_file(filename: str):
+async def download_file(filename: str, raw: bool = False):
     doc = database.get_document_by_filename(filename)
     if not doc:
         raise HTTPException(status_code=404, detail="Bestand niet gevonden in database")
@@ -529,7 +529,7 @@ async def download_file(filename: str):
                 "Content-Security-Policy": "default-src 'none'; sandbox",
             },
         )
-    if suffix == ".docx":
+    if suffix == ".docx" and not raw:
         try:
             with open(file_path, "rb") as f:
                 result = mammoth.convert_to_html(f)
