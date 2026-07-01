@@ -1,7 +1,9 @@
 """Streamlit kenniscapture tool — Tabblad 1: Kenniscapture | Tabblad 2: Kennisbank."""
+import html
 import logging
 import os
 import time
+import urllib.parse
 from pathlib import Path
 
 import httpx
@@ -337,12 +339,24 @@ with tab1:
 
             if source_passage:
                 page_label = f" · pagina {source_page}" if source_page else ""
-                st.info(
-                    f"📄 **Gevonden in:** {source_file}{page_label}\n\n"
-                    f'*"{source_passage}"*'
+                safe_file = html.escape(source_file, quote=True)
+                safe_passage = html.escape(source_passage, quote=True)
+                safe_page = html.escape(page_label, quote=True)
+                download_url = f"{API_BASE}/api/download/{urllib.parse.quote(source_file, safe='')}"
+                st.markdown(
+                    f'📄 <strong>Gevonden in:</strong> <a href="{download_url}" target="_blank">{safe_file}</a>{safe_page}'
+                    f'<br><em>"{safe_passage}"</em>',
+                    unsafe_allow_html=True,
                 )
             elif source_file:
-                st.caption(f"📄 Vraag gebaseerd op: **{source_file}** — onderwerp: {q.get('topic_label', '')}")
+                safe_file = html.escape(source_file, quote=True)
+                safe_topic = html.escape(q.get("topic_label", ""), quote=True)
+                download_url = f"{API_BASE}/api/download/{urllib.parse.quote(source_file, safe='')}"
+                st.markdown(
+                    f'📄 Vraag gebaseerd op: <a href="{download_url}" target="_blank"><strong>{safe_file}</strong></a>'
+                    f" — onderwerp: {safe_topic}",
+                    unsafe_allow_html=True,
+                )
             else:
                 st.caption(f"📄 Algemene kennisbankvraag — onderwerp: {q.get('topic_label', '')}")
 
