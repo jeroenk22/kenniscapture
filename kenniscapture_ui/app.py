@@ -43,11 +43,11 @@ def _backend_bereikbaar() -> bool:
         return False
 
 
-def _api(method: str, path: str, **kwargs) -> dict:
+def _api(method: str, path: str, timeout: float = 600.0, **kwargs) -> dict:
     """Roep de FastAPI backend aan."""
     url = f"{API_BASE}{path}"
     try:
-        resp = httpx.request(method, url, timeout=600.0, **kwargs)
+        resp = httpx.request(method, url, timeout=timeout, **kwargs)
         resp.raise_for_status()
         return resp.json()
     except httpx.ConnectError:
@@ -231,9 +231,14 @@ with tab1:
             st.session_state.current_question = None
         else:
             # Fase 2 — Ollama analyse
-            status.caption("🤖 AI herkent contracttype en topics — even geduld...")
+            status.caption("🤖 AI leest het volledige contract door en zoekt alle relevante clausules — dit kan enkele minuten duren...")
             prog.progress(45)
-            analysis = _api("POST", f"/api/analyze-document/{parse_result['doc_id']}")
+            # Volledige doorlichting van lange contracten kan op CPU lang duren
+            analysis = _api(
+                "POST",
+                f"/api/analyze-document/{parse_result['doc_id']}",
+                timeout=1800.0,
+            )
 
             if not analysis or not analysis.get("detected_topics"):
                 prog.progress(100)
@@ -288,9 +293,13 @@ with tab1:
         if not st.session_state.current_question:
             detected_topics_full = doc.get("detected_topics", [])
             detected_topic_keys = [t.get("topic", "") for t in detected_topics_full]
-            # Passages per topic zodat de backend de juiste kan opzoeken
+            # Passages en paginanummers per topic zodat de backend de juiste kan opzoeken
             passages_by_topic = {
                 t.get("topic", ""): t.get("passage", "")
+                for t in detected_topics_full
+            }
+            pages_by_topic = {
+                t.get("topic", ""): t.get("page")
                 for t in detected_topics_full
             }
 
@@ -304,6 +313,7 @@ with tab1:
                         "detected_topics": detected_topic_keys,
                         "source_passage": "",
                         "passages_by_topic": passages_by_topic,
+                        "pages_by_topic": pages_by_topic,
                         "source_file": doc.get("filename", ""),
                     },
                 )

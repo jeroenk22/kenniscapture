@@ -62,16 +62,16 @@ def test_prompt_filtert_niet_relevant_uit_history():
     assert "geen relevante informatie" not in prompt
 
 
-def test_prompt_trunceert_kennisbank_op_4000_tekens():
-    lange_kennis = "k" * 5000
+def test_prompt_trunceert_kennisbank_op_6000_tekens():
+    lange_kennis = "k" * 7000
     prompt = ollama_client._build_chat_prompt(
         message="vraag",
         history=[],
         knowledge_chunks=lange_kennis,
     )
-    kennis_in_prompt = "k" * 4000
+    kennis_in_prompt = "k" * 6000
     assert kennis_in_prompt in prompt
-    assert "k" * 4001 not in prompt
+    assert "k" * 6001 not in prompt
 
 
 def test_prompt_behoudt_geslaagde_history():
@@ -158,6 +158,124 @@ async def test_analyze_document_json_fout_geeft_fallback():
         result = await ollama_client.analyze_document("tekst", [])
     assert result["contract_type"] == "anders"
     assert result["detected_topics"] == []
+
+
+@pytest.mark.asyncio
+async def test_analyze_document_analyseert_hele_lange_tekst_in_segmenten():
+    """Een lang contract wordt in segmenten geanalyseerd zodat ook clausules
+    achterin het document gevonden worden."""
+    lange_tekst = "\n".join(f"Artikel {i}: bepaling nummer {i}." for i in range(150))
+    # Precies twee segmenten: langer dan één, korter dan twee volle segmenten
+    assert ollama_client._SEGMENT_GROOTTE < len(lange_tekst) <= 2 * ollama_client._SEGMENT_GROOTTE
+
+    antwoorden = [
+        json.dumps({
+            "contract_type": "NDA",
+            "detected_topics": [{"topic": "looptijd_bepalen", "passage": "vooraan"}],
+        }),
+        json.dumps({
+            "contract_type": "NDA",
+            "detected_topics": [{"topic": "boeteclausule_bedrag", "passage": "achteraan"}],
+        }),
+    ]
+    mock = AsyncMock(side_effect=antwoorden)
+    with patch.object(ollama_client, "_ollama_request", mock):
+        result = await ollama_client.analyze_document(
+            lange_tekst, ["looptijd_bepalen", "boeteclausule_bedrag"]
+        )
+
+    assert mock.await_count == 2
+    topics = {t["topic"] for t in result["detected_topics"]}
+    assert topics == {"looptijd_bepalen", "boeteclausule_bedrag"}
+
+
+@pytest.mark.asyncio
+async def test_analyze_document_filtert_onbekende_topic_sleutels():
+    """Topics die het model verzint (niet in de catalogus) worden genegeerd."""
+    payload = json.dumps({
+        "contract_type": "NDA",
+        "detected_topics": [
+            {"topic": "verzonnen_onderwerp", "passage": "iets"},
+            {"topic": "looptijd_bepalen", "passage": "looptijd van twee jaar"},
+        ],
+    })
+    with patch.object(ollama_client, "_ollama_request", AsyncMock(return_value=payload)):
+        result = await ollama_client.analyze_document("tekst", ["looptijd_bepalen"])
+    topics = [t["topic"] for t in result["detected_topics"]]
+    assert topics == ["looptijd_bepalen"]
+
+
+@pytest.mark.asyncio
+async def test_analyze_document_eerste_vindplaats_wint_bij_dubbel_topic():
+    lange_tekst = "\n".join(f"Regel {i} " + "x" * 30 for i in range(150))
+    assert ollama_client._SEGMENT_GROOTTE < len(lange_tekst) <= 2 * ollama_client._SEGMENT_GROOTTE
+    antwoorden = [
+        json.dumps({
+            "contract_type": "NDA",
+            "detected_topics": [{"topic": "looptijd_bepalen", "passage": "eerste"}],
+        }),
+        json.dumps({
+            "contract_type": "NDA",
+            "detected_topics": [{"topic": "looptijd_bepalen", "passage": "tweede"}],
+        }),
+    ]
+    with patch.object(ollama_client, "_ollama_request", AsyncMock(side_effect=antwoorden)):
+        result = await ollama_client.analyze_document(lange_tekst, ["looptijd_bepalen"])
+    assert result["detected_topics"] == [{"topic": "looptijd_bepalen", "passage": "eerste"}]
+
+
+def test_segmenteer_knipt_op_regelgrenzen():
+    tekst = "\n".join("regel " + "a" * 100 for _ in range(100))
+    segmenten = ollama_client._segmenteer(tekst)
+    assert len(segmenten) > 1
+    for segment in segmenten:
+        assert len(segment) <= (
+            ollama_client._SEGMENT_GROOTTE + 107 + ollama_client._MIN_STAART
+        )
+        # geen halve regels: elke segment eindigt op een regelgrens
+        assert segment.endswith("\n")
+    assert "".join(segmenten) == tekst + "\n"
+
+
+def test_segmenteer_plakt_korte_staart_aan_vorig_segment():
+    """Een restje van een paar regels krijgt geen eigen Ollama-aanroep."""
+    tekst = "a" * 3400 + "\n" + "staartje"
+    segmenten = ollama_client._segmenteer(tekst)
+    assert len(segmenten) == 1
+    assert "staartje" in segmenten[0]
+
+
+@pytest.mark.asyncio
+async def test_analyze_document_corrigeert_typefout_in_topic_sleutel():
+    """'onslaggronden' (typefout van het model) telt gewoon als 'ontslaggronden'."""
+    payload = json.dumps({
+        "contract_type": "arbeidscontract",
+        "detected_topics": [{"topic": "onslaggronden", "passage": "opzegging conform wet"}],
+    })
+    with patch.object(ollama_client, "_ollama_request", AsyncMock(return_value=payload)):
+        result = await ollama_client.analyze_document(
+            "tekst", ["ontslaggronden", "loon_bepalen"]
+        )
+    assert [t["topic"] for t in result["detected_topics"]] == ["ontslaggronden"]
+
+
+@pytest.mark.asyncio
+async def test_analyze_document_filtert_lege_passages():
+    """Topics zonder letterlijke passage worden weggelaten — daar valt geen
+    gegronde vraag over te stellen."""
+    payload = json.dumps({
+        "contract_type": "NDA",
+        "detected_topics": [
+            {"topic": "looptijd_bepalen", "passage": ""},
+            {"topic": "boeteclausule_bedrag", "passage": "  "},
+            {"topic": "geheimhouding_scope", "passage": "Partijen houden alles geheim."},
+        ],
+    })
+    with patch.object(ollama_client, "_ollama_request", AsyncMock(return_value=payload)):
+        result = await ollama_client.analyze_document(
+            "tekst", ["looptijd_bepalen", "boeteclausule_bedrag", "geheimhouding_scope"]
+        )
+    assert [t["topic"] for t in result["detected_topics"]] == ["geheimhouding_scope"]
 
 
 # ── generate_question ───────────────────────────────────────────────────────
