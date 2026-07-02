@@ -123,7 +123,8 @@ export default function Chat() {
                       <a
                         key={`${source.file}:${source.topic_label}`}
                         href={`http://${window.location.hostname}:8000/api/download/${encodeURIComponent(source.file)}`}
-                        download={source.file}
+                        target="_blank"
+                        rel="noopener noreferrer"
                         className="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded-full hover:bg-muted/70 cursor-pointer no-underline"
                         title={
                           source.passage

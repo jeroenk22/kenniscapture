@@ -325,18 +325,25 @@ def save_asked_question(
         )
 
 
-def mark_question_answered(question_id: str) -> None:  # noqa: ARG001
+def mark_question_answered(question_hash: str) -> None:
     with _conn() as con:
-        con.execute(
-            """
-            UPDATE asked_questions SET answered = TRUE
-            WHERE id = (
-                SELECT id FROM asked_questions
-                WHERE answered = FALSE AND skipped = FALSE AND irrelevant = FALSE
-                ORDER BY id DESC LIMIT 1
-            )
-            """
+        cur = con.execute(
+            "UPDATE asked_questions SET answered = TRUE WHERE question_hash = ?",
+            (question_hash,),
         )
+        if cur.rowcount == 0:
+            # Vraag niet via generate-question gesteld — val terug op de
+            # meest recente open vraag.
+            con.execute(
+                """
+                UPDATE asked_questions SET answered = TRUE
+                WHERE id = (
+                    SELECT id FROM asked_questions
+                    WHERE answered = FALSE AND skipped = FALSE AND irrelevant = FALSE
+                    ORDER BY id DESC LIMIT 1
+                )
+                """
+            )
 
 
 def mark_question_skipped(question_id: str) -> None:  # noqa: ARG001

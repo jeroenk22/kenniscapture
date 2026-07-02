@@ -16,6 +16,7 @@ htmlcov/
 # Data & uploads (vertrouwelijke data)
 data/
 uploads/
+voorbeeldcontracten/
 
 # Environment
 .env

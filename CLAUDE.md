@@ -97,6 +97,7 @@ pnpm test:coverage
 - Nooit de Ollama integratie vervangen door een cloud API
 - Nooit bestaande tests verwijderen
 - Nooit code opleveren die niet production-ready is
+- Nooit "Co-Authored-By: Claude" of "Generated with Claude" (of vergelijkbare AI-attributie) toevoegen aan commits of PR's
 
 ## Teststrategie
 

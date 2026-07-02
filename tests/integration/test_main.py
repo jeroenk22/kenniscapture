@@ -204,6 +204,69 @@ def test_generate_question_zonder_passage_geeft_geen_vraag(client):
     assert resp.json()["has_question"] is False
 
 
+def test_generate_question_geeft_paginanummer_terug(client):
+    """Het paginanummer van de gevonden passage komt terug in de vraag,
+    zodat het via save-answer in de kennisbank belandt."""
+    mock_result = AsyncMock(return_value={"question": "Waarom deze scope?"})
+    with patch("ollama_client.generate_question", mock_result):
+        resp = client.post(
+            "/api/generate-question",
+            json={
+                "document_id": 1,
+                "contract_type": "NDA",
+                "detected_topics": ["geheimhouding_scope"],
+                "source_passage": "",
+                "source_file": "nda.pdf",
+                "passages_by_topic": {
+                    "geheimhouding_scope": "Partijen houden informatie geheim."
+                },
+                "pages_by_topic": {"geheimhouding_scope": 3},
+            },
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["has_question"] is True
+    assert data["source_page"] == 3
+
+
+def test_save_answer_markeert_juiste_vraag_beantwoord(client, tmp_path):
+    """save-answer markeert exact de beantwoorde vraag als answered,
+    ook als er daarna al een nieuwere vraag is gesteld."""
+    import hashlib
+
+    with patch("database.DB_PATH", tmp_path / "test.db"):
+        import database
+
+        oud = "Waarom een boeteclausule?"
+        nieuw = "Waarom deze looptijd?"
+        database.save_asked_question(
+            "NDA", "boeteclausule_wanneer", oud,
+            hashlib.md5(oud.lower().strip().encode()).hexdigest(),
+        )
+        database.save_asked_question(
+            "NDA", "looptijd_bepalen", nieuw,
+            hashlib.md5(nieuw.lower().strip().encode()).hexdigest(),
+        )
+
+    payload = {
+        "question_id": "q_oudere",
+        "question": oud,
+        "answer": "Als stok achter de deur bij schending",
+        "topic": "boeteclausule_wanneer",
+        "contract_type": "NDA",
+        "source_file": "nda.pdf",
+        "source_passage": "Boete van EUR 10.000 per overtreding.",
+        "source_page": None,
+    }
+    assert client.post("/api/save-answer", json=payload).status_code == 200
+
+    with patch("database.DB_PATH", tmp_path / "test.db"):
+        rows = database.get_asked_questions("NDA", "boeteclausule_wanneer")
+        assert rows[0]["answered"] == 1
+        rows = database.get_asked_questions("NDA", "looptijd_bepalen")
+        assert rows[0]["answered"] == 0
+
+
 def test_generate_question_ollama_fout(client):
     with patch("ollama_client.generate_question", side_effect=RuntimeError("Ollama down")):
         resp = client.post(
@@ -468,6 +531,20 @@ def test_chat_stream(client):
 
 
 def test_chat_stream_ollama_fout(client):
+    # Kennisbank moet gevuld zijn, anders komt de lege-kennisbank kortsluiting
+    # eerst en wordt Ollama nooit aangeroepen.
+    payload = {
+        "question_id": "q_fout",
+        "question": "Wat is de looptijd?",
+        "answer": "Twee jaar",
+        "topic": "looptijd_bepalen",
+        "contract_type": "NDA",
+        "source_file": "nda.pdf",
+        "source_passage": "Looptijd van twee jaar.",
+        "source_page": None,
+    }
+    assert client.post("/api/save-answer", json=payload).status_code == 200
+
     async def fout_stream(*_args, **_kwargs):
         raise RuntimeError("Ollama niet bereikbaar")
         yield  # noqa: unreachable
@@ -478,7 +555,96 @@ def test_chat_stream_ollama_fout(client):
             json={"message": "Vraag", "conversation_history": []},
         )
     assert resp.status_code == 200
-    assert "fout" in resp.text.lower() or "token" in resp.text
+    assert "fout" in resp.text.lower()
+
+
+def test_chat_lege_kennisbank_slaat_ollama_over(client):
+    """Bij een lege kennisbank komt er een vast antwoord — Ollama wordt nooit
+    aangeroepen, dus er kan ook niets verzonnen worden."""
+
+    async def mag_niet_aangeroepen_worden(*_args, **_kwargs):
+        raise AssertionError("Ollama mag niet aangeroepen worden bij lege kennisbank")
+        yield  # noqa: unreachable
+
+    with patch("ollama_client.chat_stream", mag_niet_aangeroepen_worden):
+        resp = client.post(
+            "/api/chat",
+            json={"message": "Wat is de proeftijd?", "conversation_history": []},
+        )
+    assert resp.status_code == 200
+    assert "kennisbank is nog leeg" in resp.text.lower()
+    assert '"sources": []' in resp.text
+
+
+def test_chat_geen_bronnen_bij_geen_informatie_antwoord(client):
+    """Als het model aangeeft dat de kennisbank niets bevat, mogen er geen
+    bronbadges getoond worden — dat wekt ten onrechte vertrouwen."""
+    payload = {
+        "question_id": "q_bron",
+        "question": "Wat is de betaaltermijn?",
+        "answer": "Dertig dagen na factuurdatum vanwege de informatie uit inkoopbeleid",
+        "topic": "betaaltermijn_bepalen",
+        "contract_type": "leverancier",
+        "source_file": "leverancier.pdf",
+        "source_passage": "Betaling binnen 30 dagen.",
+        "source_page": 2,
+    }
+    assert client.post("/api/save-answer", json=payload).status_code == 200
+
+    async def fake_stream(*_args, **_kwargs):
+        yield "De kennisbank bevat hierover geen verdere informatie."
+
+    with patch("ollama_client.chat_stream", fake_stream):
+        resp = client.post(
+            "/api/chat",
+            json={"message": "Iets heel anders?", "conversation_history": []},
+        )
+    assert resp.status_code == 200
+    assert '"sources": []' in resp.text
+
+
+def test_chat_ranking_negeert_leestekens(client):
+    """'proeftijd?' in de vraag moet gewoon matchen op 'proeftijd' in een chunk."""
+    payload = {
+        "question_id": "q_leesteken",
+        "question": "Waarom twee maanden proeftijd",
+        "answer": "Proeftijd van twee maanden geeft voldoende beoordelingstijd",
+        "topic": "proeftijd_duur",
+        "contract_type": "arbeidscontract",
+        "source_file": "contract.pdf",
+        "source_passage": "Proeftijd van twee maanden.",
+        "source_page": 1,
+    }
+    assert client.post("/api/save-answer", json=payload).status_code == 200
+
+    for i in range(20):
+        vuller = {
+            "question_id": f"q_leestekenvuller_{i}",
+            "question": f"Vulvraag {i} over garantie",
+            "answer": f"Vulantwoord {i} over garantietermijnen",
+            "topic": "garantie_clausule",
+            "contract_type": "leverancier",
+            "source_file": "leverancier.pdf",
+            "source_passage": "Garantie van twaalf maanden.",
+            "source_page": None,
+        }
+        assert client.post("/api/save-answer", json=vuller).status_code == 200
+
+    captured = {}
+
+    async def fake_stream(*_args, **kwargs):
+        captured["knowledge_chunks"] = kwargs.get("knowledge_chunks", "")
+        yield "Antwoord"
+
+    with patch("ollama_client.chat_stream", fake_stream):
+        resp = client.post(
+            "/api/chat",
+            json={"message": "Wat is de proeftijd?", "conversation_history": []},
+        )
+    assert resp.status_code == 200
+    # De proeftijd-chunk moet vóór de vulchunks staan in de context
+    kennis = captured["knowledge_chunks"].lower()
+    assert kennis.index("proeftijd") < kennis.index("garantie")
 
 
 def test_chat_stream_scoort_bronnen_op_trefwoorden(client):
@@ -506,6 +672,52 @@ def test_chat_stream_scoort_bronnen_op_trefwoorden(client):
         )
     assert resp.status_code == 200
     assert "sources" in resp.text
+
+
+def test_chat_stuurt_relevante_chunk_ook_als_niet_meest_recent(client):
+    """Een oude chunk die inhoudelijk bij de vraag past mag niet buiten het
+    context-venster vallen alleen omdat er 20+ recentere chunks bestaan."""
+    oude_payload = {
+        "question_id": "q_oud",
+        "question": "Waarom is geen expliciete motivering voor ontslag verplicht?",
+        "answer": "Ontslagrecht is wettelijk geregeld, niet contractueel.",
+        "topic": "ontslaggronden",
+        "contract_type": "arbeidscontract",
+        "source_file": "arbeidscontract.docx",
+        "source_passage": "Ontslag geschiedt conform de wettelijke bepalingen.",
+        "source_page": None,
+    }
+    assert client.post("/api/save-answer", json=oude_payload).status_code == 200
+
+    for i in range(20):
+        vuller = {
+            "question_id": f"q_vuller_{i}",
+            "question": f"Vulvraag nummer {i} over garantie",
+            "answer": f"Vulantwoord nummer {i} over garantietermijnen",
+            "topic": "garantie_clausule",
+            "contract_type": "leverancier",
+            "source_file": "leverancier.pdf",
+            "source_passage": "Garantie van twaalf maanden.",
+            "source_page": None,
+        }
+        assert client.post("/api/save-answer", json=vuller).status_code == 200
+
+    captured = {}
+
+    async def fake_stream(*_args, **kwargs):
+        captured["knowledge_chunks"] = kwargs.get("knowledge_chunks", "")
+        yield "Antwoord op basis van de kennisbank"
+
+    with patch("ollama_client.chat_stream", fake_stream):
+        resp = client.post(
+            "/api/chat",
+            json={
+                "message": "Waarom is geen expliciete motivering voor ontslag verplicht?",
+                "conversation_history": [],
+            },
+        )
+    assert resp.status_code == 200
+    assert "ontslag" in captured["knowledge_chunks"].lower()
 
 
 # ── /api/download DOCX-preview ──────────────────────────────────────────────

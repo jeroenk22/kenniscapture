@@ -75,6 +75,7 @@ class GenerateQuestionRequest(BaseModel):
     source_passage: str
     source_file: str
     passages_by_topic: dict[str, str] = {}
+    pages_by_topic: dict[str, int | None] = {}
 
 
 class SaveAnswerRequest(BaseModel):
@@ -96,6 +97,10 @@ class SkipQuestionRequest(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     conversation_history: list[dict[str, str]]
+
+
+def _question_hash(question: str) -> str:
+    return hashlib.md5(question.lower().strip().encode()).hexdigest()
 
 
 # === Endpoints ===
@@ -149,7 +154,7 @@ async def upload_document(file: UploadFile = File(...)):
     topics_list = [t["topic"] for t in all_topics]
 
     try:
-        analysis = await ollama_client.analyze_document(text[:5000], topics_list)
+        analysis = await ollama_client.analyze_document(text, topics_list)
     except Exception as exc:
         _log.warning("Ollama analyse mislukt: %s", exc, exc_info=True)
         analysis = {"contract_type": "anders", "detected_topics": []}
@@ -280,7 +285,7 @@ async def analyze_document_endpoint(doc_id: int):
     topics_list = [t["topic"] for t in all_topics]
 
     try:
-        analysis = await ollama_client.analyze_document(text[:5000], topics_list)
+        analysis = await ollama_client.analyze_document(text, topics_list)
     except Exception as exc:
         _log.warning("Ollama analyse mislukt: %s", exc, exc_info=True)
         analysis = {"contract_type": "anders", "detected_topics": []}
@@ -351,13 +356,12 @@ async def generate_question(req: GenerateQuestionRequest):
         question_text = f"Kun je meer vertellen over: {next_topic['topic_label']}?"
 
     question_id = f"q_{uuid.uuid4().hex[:8]}"
-    question_hash = hashlib.md5(question_text.lower().strip().encode()).hexdigest()
 
     database.save_asked_question(
         contract_type=req.contract_type,
         topic=next_topic["topic"],
         question=question_text,
-        question_hash=question_hash,
+        question_hash=_question_hash(question_text),
     )
 
     return {
@@ -367,7 +371,7 @@ async def generate_question(req: GenerateQuestionRequest):
         "topic_label": next_topic["topic_label"],
         "source_passage": passage,
         "source_file": req.source_file,
-        "source_page": None,
+        "source_page": req.pages_by_topic.get(next_topic["topic"]),
         "has_question": True,
     }
 
@@ -384,7 +388,7 @@ async def save_answer(req: SaveAnswerRequest):
         source_passage=req.source_passage,
         source_page=req.source_page,
     )
-    database.mark_question_answered(req.question_id)
+    database.mark_question_answered(_question_hash(req.question))
     completion = knowledge_engine.calculate_completion()
     return {"chunk_id": chunk_id, "completion": completion}
 
@@ -449,17 +453,74 @@ async def reset():
     return {"status": "ok"}
 
 
+# Max aantal tekens kennisbank-context in de chat-prompt (hele chunks)
+_KENNIS_BUDGET = 6000
+_SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+
+def _zoekwoorden(text: str) -> set[str]:
+    """Woorden langer dan 4 tekens, zonder leestekens — voor trefwoord-matching."""
+    return {w for w in re.findall(r"\w+", text.lower()) if len(w) > 4}
+
+
+def _chunk_woorden(chunk: dict) -> set[str]:
+    return _zoekwoorden(
+        " ".join(
+            str(chunk.get(veld) or "") for veld in ("topic_label", "question", "answer")
+        )
+    )
+
+
+def _chunk_context(chunk: dict) -> str:
+    return (
+        f"[{chunk['topic_label']} | Bron: {chunk['source_file']}"
+        + (f" (pagina {chunk['source_page']})" if chunk.get("source_page") else "")
+        + f"]\nV: {chunk['question']}\nA: {chunk['answer']}"
+    )
+
+
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
     chunks = database.get_all_chunks()
-    used_chunks = chunks[:20]
 
-    knowledge_str = "\n\n".join(
-        f"[{c['topic_label']} | Bron: {c['source_file']}"
-        + (f" (pagina {c['source_page']})" if c.get("source_page") else "")
-        + f"]\nV: {c['question']}\nA: {c['answer']}"
-        for c in used_chunks
+    if not chunks:
+        # Lege kennisbank: nooit Ollama laten "antwoorden" zonder enige kennis
+        async def empty_stream():
+            msg = (
+                "De kennisbank is nog leeg. Er zijn nog geen antwoorden "
+                "vastgelegd in de kenniscapture tool, dus ik kan deze vraag "
+                "niet beantwoorden."
+            )
+            yield f"data: {json.dumps({'token': msg})}\n\n"
+            yield f"data: {json.dumps({'done': True, 'sources': []})}\n\n"
+
+        return StreamingResponse(
+            empty_stream(), media_type="text/event-stream", headers=_SSE_HEADERS
+        )
+
+    # Selecteer de chunks die het meest relevant zijn voor DEZE vraag i.p.v.
+    # gewoon de meest recent aangemaakte — anders valt oudere kennis buiten
+    # het gestuurde context-venster en lijkt de kennisbank "leeg".
+    question_words = _zoekwoorden(req.message)
+    ranked_chunks = sorted(
+        chunks,
+        key=lambda c: len(question_words & _chunk_woorden(c)),
+        reverse=True,
     )
+
+    # Vul de context met hele chunks tot het budget vol is — een half
+    # doorgeknipte chunk levert onbruikbare context op.
+    used_chunks: list[dict] = []
+    parts: list[str] = []
+    total = 0
+    for c in ranked_chunks:
+        part = _chunk_context(c)
+        if used_chunks and total + len(part) > _KENNIS_BUDGET:
+            break
+        used_chunks.append(c)
+        parts.append(part)
+        total += len(part) + 2
+    knowledge_str = "\n\n".join(parts)
 
     async def event_stream():
         full_text = ""
@@ -478,38 +539,35 @@ async def chat(req: ChatRequest):
             yield f"data: {json.dumps({'token': error_msg})}\n\n"
             full_text = error_msg
 
-        # Zoek de meest relevante chunks op basis van trefwoorden in het antwoord
-        answer_words = {w.lower() for w in full_text.split() if len(w) > 4}
-        seen_keys: set[str] = set()
-        scored: list[tuple[int, dict]] = []
-        for chunk in used_chunks:
-            topic_words = set((chunk.get("topic_label") or "").lower().split())
-            q_words = set((chunk.get("question") or "").lower().split())
-            a_words = set((chunk.get("answer") or "").lower().split())
-            matches = len(answer_words & (topic_words | q_words | a_words))
-            scored.append((matches, chunk))
-        scored.sort(key=lambda x: -x[0])
-
+        # Zoek de meest relevante chunks op basis van trefwoorden in het
+        # antwoord. Geen bronnen bij een "weet het niet"-antwoord — dat wekt
+        # ten onrechte de indruk dat het antwoord ergens op gebaseerd is.
         sources = []
-        for _, chunk in scored[:5]:
-            key = f"{chunk.get('source_file')}|{chunk.get('topic_label')}"
-            if key not in seen_keys:
-                seen_keys.add(key)
-                sources.append(
-                    {
-                        "file": chunk.get("source_file", ""),
-                        "topic_label": chunk.get("topic_label", ""),
-                        "passage": chunk.get("source_passage", ""),
-                        "page": chunk.get("source_page"),
-                    }
-                )
+        if "geen verdere informatie" not in full_text.lower():
+            answer_words = _zoekwoorden(full_text)
+            scored = [(len(answer_words & _chunk_woorden(c)), c) for c in used_chunks]
+            scored.sort(key=lambda x: -x[0])
+
+            seen_keys: set[str] = set()
+            for matches, chunk in scored[:5]:
+                if matches == 0:
+                    continue
+                key = f"{chunk.get('source_file')}|{chunk.get('topic_label')}"
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    sources.append(
+                        {
+                            "file": chunk.get("source_file", ""),
+                            "topic_label": chunk.get("topic_label", ""),
+                            "passage": chunk.get("source_passage", ""),
+                            "page": chunk.get("source_page"),
+                        }
+                    )
 
         yield f"data: {json.dumps({'done': True, 'sources': sources})}\n\n"
 
     return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        event_stream(), media_type="text/event-stream", headers=_SSE_HEADERS
     )
 
 
