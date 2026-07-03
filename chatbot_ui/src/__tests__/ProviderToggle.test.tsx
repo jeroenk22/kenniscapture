@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../api";
@@ -89,5 +89,36 @@ describe("ProviderToggle", () => {
     await waitFor(() => {
       expect(container).toBeEmptyDOMElement();
     });
+  });
+
+  it("ververst de stand periodiek — switch uit Streamlit wordt vanzelf zichtbaar", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(api.getSettings)
+        .mockResolvedValueOnce({
+          provider: "ollama",
+          claude_available: true,
+          claude_model: "claude-sonnet-5",
+        })
+        .mockResolvedValue({
+          provider: "claude",
+          claude_available: true,
+          claude_model: "claude-sonnet-5",
+        });
+
+      render(<ProviderToggle />);
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(screen.getByText(/Ollama \(lokaal\)/)).toBeInTheDocument();
+
+      // Na het poll-interval toont de toggle de nieuwe stand zonder F5
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+      expect(screen.getByText(/Claude \(cloud\)/)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

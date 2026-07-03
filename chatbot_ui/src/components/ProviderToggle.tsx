@@ -1,14 +1,33 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getSettings, type LlmSettings, setProvider } from "../api";
+
+// Interval waarmee de providerstand bij de backend wordt ververst, zodat een
+// switch vanuit de Streamlit-sidebar hier vanzelf zichtbaar wordt (en andersom)
+const POLL_INTERVAL_MS = 3000;
 
 export default function ProviderToggle() {
   const [settings, setSettings] = useState<LlmSettings | null>(null);
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
 
   useEffect(() => {
-    getSettings()
-      .then(setSettings)
-      .catch(() => setSettings(null));
+    let actief = true;
+    const laadSettings = () => {
+      getSettings()
+        .then((s) => {
+          // Niet overschrijven terwijl een eigen switch onderweg is
+          if (actief && !busyRef.current) setSettings(s);
+        })
+        .catch(() => {
+          if (actief && !busyRef.current) setSettings(null);
+        });
+    };
+    laadSettings();
+    const interval = setInterval(laadSettings, POLL_INTERVAL_MS);
+    return () => {
+      actief = false;
+      clearInterval(interval);
+    };
   }, []);
 
   if (!settings) return null;
@@ -19,12 +38,14 @@ export default function ProviderToggle() {
     if (busy) return;
     const next = isClaude ? "ollama" : "claude";
     setBusy(true);
+    busyRef.current = true;
     try {
       await setProvider(next);
       setSettings({ ...settings, provider: next });
     } catch {
       // switch mislukt (bijv. geen API-key) — huidige stand behouden
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   };
