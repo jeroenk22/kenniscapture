@@ -25,7 +25,8 @@ if ! command -v python3 &>/dev/null && ! command -v python &>/dev/null; then
     exit 1
 fi
 PYTHON=$(command -v python3 || command -v python)
-echo "   ✅ $($PYTHON --version)"
+# Quotes verplicht: het pad kan spaties bevatten (C:\Program Files\...)
+echo "   ✅ $("$PYTHON" --version)"
 
 # === Node.js controleren ===
 echo "📦 Node.js controleren..."
@@ -57,7 +58,7 @@ echo "   ✅ Ollama gevonden"
 echo ""
 echo "🐍 Python omgeving installeren..."
 if [ ! -d "$ROOT_DIR/backend/venv" ]; then
-    $PYTHON -m venv "$ROOT_DIR/backend/venv"
+    "$PYTHON" -m venv "$ROOT_DIR/backend/venv"
     echo "   ✅ Virtuele omgeving aangemaakt"
 fi
 
@@ -68,8 +69,9 @@ else
 fi
 
 source "$VENV_ACTIVATE"
-pip install -q --upgrade pip
-pip install -q -r "$ROOT_DIR/backend/requirements.txt"
+# Op Windows kan pip zichzelf niet via pip.exe upgraden — altijd via python -m pip
+python -m pip install -q --upgrade pip
+python -m pip install -q -r "$ROOT_DIR/backend/requirements.txt"
 echo "   ✅ Python pakketten geïnstalleerd"
 
 # === Node pakketten installeren ===
