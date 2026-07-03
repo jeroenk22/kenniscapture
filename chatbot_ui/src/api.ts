@@ -16,7 +16,9 @@ export interface StreamChunk {
   sources?: Source[];
 }
 
-const API_BASE = `http://${window.location.hostname}:8000`;
+// Achter een tunnel/reverse proxy (bijv. Cloudflare) is de backend niet op
+// hostname:8000 bereikbaar — zet dan VITE_API_BASE op de publieke API-URL.
+export const API_BASE = import.meta.env.VITE_API_BASE || `http://${window.location.hostname}:8000`;
 
 export interface LlmSettings {
   provider: "ollama" | "claude";

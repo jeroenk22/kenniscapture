@@ -13,6 +13,9 @@ logging.basicConfig(level=logging.INFO)
 _log = logging.getLogger("kenniscapture_ui")
 
 API_BASE = os.getenv("API_BASE_URL", "http://localhost:8000")
+# Links die de gebruiker in de browser opent (documentpreviews) — achter een
+# tunnel/reverse proxy wijkt de publieke API-URL af van de interne.
+PUBLIC_API_BASE = os.getenv("PUBLIC_API_BASE_URL", API_BASE)
 
 st.set_page_config(
     page_title="Kenniscapture — Ten Brinke",
@@ -388,7 +391,7 @@ with tab1:
                 safe_passage = html.escape(source_passage, quote=True)
                 safe_page = html.escape(page_label, quote=True)
                 encoded_file = urllib.parse.quote(source_file, safe="")
-                preview_url = f"{API_BASE}/api/download/{encoded_file}"
+                preview_url = f"{PUBLIC_API_BASE}/api/download/{encoded_file}"
                 st.markdown(
                     f'📄 <strong>Gevonden in:</strong> '
                     f'<a href="{preview_url}" target="_blank">{safe_file}</a>'
@@ -400,7 +403,7 @@ with tab1:
                 safe_file = html.escape(source_file, quote=True)
                 safe_topic = html.escape(q.get("topic_label", ""), quote=True)
                 encoded_file = urllib.parse.quote(source_file, safe="")
-                preview_url = f"{API_BASE}/api/download/{encoded_file}"
+                preview_url = f"{PUBLIC_API_BASE}/api/download/{encoded_file}"
                 st.markdown(
                     f'📄 Vraag gebaseerd op: '
                     f'<a href="{preview_url}" target="_blank"><strong>{safe_file}</strong></a>'
