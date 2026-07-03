@@ -18,9 +18,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
+import claude_client
 import database
 import document_parser
 import knowledge_engine
+import llm_client
+import llm_settings
 import ollama_client
 
 logging.basicConfig(
@@ -59,7 +62,7 @@ async def startup() -> None:
     database.init_db()
     _log.info("Database geinitialiseerd — Ollama model voorladen...")
     try:
-        await ollama_client._ollama_request("ping")
+        await ollama_client.generate("ping")
         _log.info("Ollama model geladen — API klaar")
     except Exception as exc:
         _log.warning("Ollama warmup mislukt (niet fataal): %s", exc)
@@ -97,6 +100,10 @@ class SkipQuestionRequest(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     conversation_history: list[dict[str, str]]
+
+
+class SettingsRequest(BaseModel):
+    provider: str  # "ollama" | "claude"
 
 
 def _question_hash(question: str) -> str:
@@ -154,7 +161,7 @@ async def upload_document(file: UploadFile = File(...)):
     topics_list = [t["topic"] for t in all_topics]
 
     try:
-        analysis = await ollama_client.analyze_document(text, topics_list)
+        analysis = await llm_client.analyze_document(text, topics_list)
     except Exception as exc:
         _log.warning("Ollama analyse mislukt: %s", exc, exc_info=True)
         analysis = {"contract_type": "anders", "detected_topics": []}
@@ -285,7 +292,7 @@ async def analyze_document_endpoint(doc_id: int):
     topics_list = [t["topic"] for t in all_topics]
 
     try:
-        analysis = await ollama_client.analyze_document(text, topics_list)
+        analysis = await llm_client.analyze_document(text, topics_list)
     except Exception as exc:
         _log.warning("Ollama analyse mislukt: %s", exc, exc_info=True)
         analysis = {"contract_type": "anders", "detected_topics": []}
@@ -344,7 +351,7 @@ async def generate_question(req: GenerateQuestionRequest):
     asked_list = [q["question"] for q in asked]
 
     try:
-        result = await ollama_client.generate_question(
+        result = await llm_client.generate_question(
             contract_type=req.contract_type,
             passage=passage,
             topic_label=next_topic["topic_label"],
@@ -453,6 +460,30 @@ async def reset():
     return {"status": "ok"}
 
 
+@app.get("/api/settings")
+async def get_settings():
+    return {
+        "provider": llm_settings.get_provider(),
+        "claude_available": claude_client.is_available(),
+        "claude_model": claude_client.CLAUDE_MODEL,
+    }
+
+
+@app.post("/api/settings")
+async def set_settings(req: SettingsRequest):
+    if req.provider not in llm_settings.PROVIDERS:
+        raise HTTPException(
+            status_code=400, detail=f"Onbekende provider: {req.provider}"
+        )
+    if req.provider == "claude" and not claude_client.is_available():
+        raise HTTPException(
+            status_code=400,
+            detail="Claude niet beschikbaar: zet ANTHROPIC_API_KEY in config.env",
+        )
+    llm_settings.set_provider(req.provider)
+    return {"provider": llm_settings.get_provider()}
+
+
 # Max aantal tekens kennisbank-context in de chat-prompt (hele chunks)
 _KENNIS_BUDGET = 6000
 _SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
@@ -525,7 +556,7 @@ async def chat(req: ChatRequest):
     async def event_stream():
         full_text = ""
         try:
-            async for token in ollama_client.chat_stream(
+            async for token in llm_client.chat_stream(
                 message=req.message,
                 history=req.conversation_history,
                 knowledge_chunks=knowledge_str,

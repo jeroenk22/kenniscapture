@@ -151,7 +151,7 @@ def test_generate_question_geen_topics(client):
 
 def test_generate_question_met_topic(client):
     mock_result = AsyncMock(return_value={"question": "Wat is de looptijd?"})
-    with patch("ollama_client.generate_question", mock_result):
+    with patch("llm_client.generate_question", mock_result):
         resp = client.post(
             "/api/generate-question",
             json={
@@ -208,7 +208,7 @@ def test_generate_question_geeft_paginanummer_terug(client):
     """Het paginanummer van de gevonden passage komt terug in de vraag,
     zodat het via save-answer in de kennisbank belandt."""
     mock_result = AsyncMock(return_value={"question": "Waarom deze scope?"})
-    with patch("ollama_client.generate_question", mock_result):
+    with patch("llm_client.generate_question", mock_result):
         resp = client.post(
             "/api/generate-question",
             json={
@@ -268,7 +268,7 @@ def test_save_answer_markeert_juiste_vraag_beantwoord(client, tmp_path):
 
 
 def test_generate_question_ollama_fout(client):
-    with patch("ollama_client.generate_question", side_effect=RuntimeError("Ollama down")):
+    with patch("llm_client.generate_question", side_effect=RuntimeError("Ollama down")):
         resp = client.post(
             "/api/generate-question",
             json={
@@ -301,7 +301,7 @@ def test_upload_document_pdf(client, tmp_path):
     )
     with (
         patch("document_parser.parse_pdf", mock_parse),
-        patch("ollama_client.analyze_document", mock_analyse),
+        patch("llm_client.analyze_document", mock_analyse),
         patch("main.UPLOAD_DIR", tmp_path),
     ):
         resp = client.post(
@@ -416,7 +416,7 @@ def test_upload_document_docx(client, tmp_path):
     )
     with (
         patch("document_parser.parse_docx", mock_parse),
-        patch("ollama_client.analyze_document", mock_analyse),
+        patch("llm_client.analyze_document", mock_analyse),
         patch("main.UPLOAD_DIR", tmp_path),
     ):
         resp = client.post(
@@ -448,7 +448,7 @@ def test_analyze_document_succes(client, tmp_path):
     )
     with (
         patch("document_parser.parse_pdf", mock_parse),
-        patch("ollama_client.analyze_document", mock_analyse),
+        patch("llm_client.analyze_document", mock_analyse),
         patch("main.UPLOAD_DIR", tmp_path),
     ):
         resp = client.post(f"/api/analyze-document/{doc_id}")
@@ -519,7 +519,7 @@ async def _fake_stream(*_args, **_kwargs):
 
 
 def test_chat_stream(client):
-    with patch("ollama_client.chat_stream", _fake_stream):
+    with patch("llm_client.chat_stream", _fake_stream):
         resp = client.post(
             "/api/chat",
             json={"message": "Wat is een NDA?", "conversation_history": []},
@@ -549,7 +549,7 @@ def test_chat_stream_ollama_fout(client):
         raise RuntimeError("Ollama niet bereikbaar")
         yield  # noqa: unreachable
 
-    with patch("ollama_client.chat_stream", fout_stream):
+    with patch("llm_client.chat_stream", fout_stream):
         resp = client.post(
             "/api/chat",
             json={"message": "Vraag", "conversation_history": []},
@@ -566,7 +566,7 @@ def test_chat_lege_kennisbank_slaat_ollama_over(client):
         raise AssertionError("Ollama mag niet aangeroepen worden bij lege kennisbank")
         yield  # noqa: unreachable
 
-    with patch("ollama_client.chat_stream", mag_niet_aangeroepen_worden):
+    with patch("llm_client.chat_stream", mag_niet_aangeroepen_worden):
         resp = client.post(
             "/api/chat",
             json={"message": "Wat is de proeftijd?", "conversation_history": []},
@@ -594,7 +594,7 @@ def test_chat_geen_bronnen_bij_geen_informatie_antwoord(client):
     async def fake_stream(*_args, **_kwargs):
         yield "De kennisbank bevat hierover geen verdere informatie."
 
-    with patch("ollama_client.chat_stream", fake_stream):
+    with patch("llm_client.chat_stream", fake_stream):
         resp = client.post(
             "/api/chat",
             json={"message": "Iets heel anders?", "conversation_history": []},
@@ -636,7 +636,7 @@ def test_chat_ranking_negeert_leestekens(client):
         captured["knowledge_chunks"] = kwargs.get("knowledge_chunks", "")
         yield "Antwoord"
 
-    with patch("ollama_client.chat_stream", fake_stream):
+    with patch("llm_client.chat_stream", fake_stream):
         resp = client.post(
             "/api/chat",
             json={"message": "Wat is de proeftijd?", "conversation_history": []},
@@ -665,7 +665,7 @@ def test_chat_stream_scoort_bronnen_op_trefwoorden(client):
     async def fake_stream(*_args, **_kwargs):
         yield "De proeftijd bedraagt twee maanden"
 
-    with patch("ollama_client.chat_stream", fake_stream):
+    with patch("llm_client.chat_stream", fake_stream):
         resp = client.post(
             "/api/chat",
             json={"message": "Wat is de proeftijd?", "conversation_history": []},
@@ -708,7 +708,7 @@ def test_chat_stuurt_relevante_chunk_ook_als_niet_meest_recent(client):
         captured["knowledge_chunks"] = kwargs.get("knowledge_chunks", "")
         yield "Antwoord op basis van de kennisbank"
 
-    with patch("ollama_client.chat_stream", fake_stream):
+    with patch("llm_client.chat_stream", fake_stream):
         resp = client.post(
             "/api/chat",
             json={
@@ -891,7 +891,7 @@ def test_upload_document_ollama_analyse_faalt_met_paginamatch(client, tmp_path):
     )
     with (
         patch("document_parser.parse_pdf", mock_parse),
-        patch("ollama_client.analyze_document", side_effect=RuntimeError("Ollama down")),
+        patch("llm_client.analyze_document", side_effect=RuntimeError("Ollama down")),
         patch("main.UPLOAD_DIR", tmp_path),
     ):
         resp = client.post(
@@ -914,7 +914,7 @@ def test_upload_document_paginamatch_gevonden(client, tmp_path):
     )
     with (
         patch("document_parser.parse_pdf", mock_parse),
-        patch("ollama_client.analyze_document", mock_analyse),
+        patch("llm_client.analyze_document", mock_analyse),
         patch("main.UPLOAD_DIR", tmp_path),
     ):
         resp = client.post(
@@ -947,9 +947,100 @@ def test_analyze_document_docx_met_ollama_fout_en_paginamatch(client, tmp_path):
     )
     with (
         patch("document_parser.parse_docx", mock_parse),
-        patch("ollama_client.analyze_document", side_effect=RuntimeError("Ollama down")),
+        patch("llm_client.analyze_document", side_effect=RuntimeError("Ollama down")),
         patch("main.UPLOAD_DIR", tmp_path),
     ):
         resp = client.post(f"/api/analyze-document/{doc_id}")
     assert resp.status_code == 200
     assert resp.json()["contract_type"] == "anders"
+
+# ── /api/settings ────────────────────────────────────────────────────────────
+
+
+def test_get_settings_default_ollama(client, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    import llm_settings
+
+    monkeypatch.setattr(llm_settings, "_provider", "ollama")
+    resp = client.get("/api/settings")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["provider"] == "ollama"
+    assert data["claude_available"] is False
+    assert "claude_model" in data
+
+
+def test_set_settings_claude_zonder_key_geeft_400(client, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    import llm_settings
+
+    monkeypatch.setattr(llm_settings, "_provider", "ollama")
+    resp = client.post("/api/settings", json={"provider": "claude"})
+    assert resp.status_code == 400
+    assert "ANTHROPIC_API_KEY" in resp.json()["detail"]
+    assert client.get("/api/settings").json()["provider"] == "ollama"
+
+
+def test_set_settings_onbekende_provider_geeft_400(client, monkeypatch):
+    import llm_settings
+
+    monkeypatch.setattr(llm_settings, "_provider", "ollama")
+    resp = client.post("/api/settings", json={"provider": "gpt"})
+    assert resp.status_code == 400
+    assert client.get("/api/settings").json()["provider"] == "ollama"
+
+
+def test_set_settings_switch_naar_claude_en_terug(client, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    import llm_settings
+
+    monkeypatch.setattr(llm_settings, "_provider", "ollama")
+
+    resp = client.post("/api/settings", json={"provider": "claude"})
+    assert resp.status_code == 200
+    assert resp.json()["provider"] == "claude"
+
+    data = client.get("/api/settings").json()
+    assert data["provider"] == "claude"
+    assert data["claude_available"] is True
+
+    resp = client.post("/api/settings", json={"provider": "ollama"})
+    assert resp.status_code == 200
+    assert client.get("/api/settings").json()["provider"] == "ollama"
+
+
+def test_chat_gebruikt_claude_provider_na_switch(client, monkeypatch):
+    """Na de switch loopt de chat via claude_client — met dezelfde prompt-opbouw."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    import llm_settings
+
+    monkeypatch.setattr(llm_settings, "_provider", "claude")
+
+    payload = {
+        "question_id": "q_claude",
+        "question": "Wat is de looptijd?",
+        "answer": "Twee jaar vanwege de projectduur",
+        "topic": "looptijd_bepalen",
+        "contract_type": "NDA",
+        "source_file": "nda.pdf",
+        "source_passage": "Looptijd van twee jaar.",
+        "source_page": None,
+    }
+    assert client.post("/api/save-answer", json=payload).status_code == 200
+
+    captured = {}
+
+    async def fake_claude_stream(prompt):
+        captured["prompt"] = prompt
+        yield "Antwoord via Claude"
+
+    with patch("claude_client.stream", fake_claude_stream):
+        resp = client.post(
+            "/api/chat",
+            json={"message": "Wat is de looptijd?", "conversation_history": []},
+        )
+    assert resp.status_code == 200
+    assert "Antwoord via Claude" in resp.text
+    # Zelfde strikte prompt als bij Ollama
+    assert "KENNISBANK" in captured["prompt"]
+    assert "STRIKTE REGELS" in captured["prompt"]

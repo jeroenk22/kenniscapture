@@ -33,6 +33,8 @@ ollama serve &> /dev/null &
 source "$VENV"
 
 export DATABASE_PATH UPLOAD_DIR OLLAMA_MODEL
+# Claude demo-provider (optioneel): key en modelkeuze uit config.env
+export ANTHROPIC_API_KEY LLM_PROVIDER CLAUDE_MODEL
 
 echo "🚀 FastAPI backend starten (poort $PORT_BACKEND)..."
 (cd "$ROOT_DIR/backend" && uvicorn main:app --reload --host "$HOST" --port "$PORT_BACKEND") &

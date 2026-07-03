@@ -103,6 +103,36 @@ def _get_completion() -> dict:
 
 # === Sidebar ===
 with st.sidebar:
+    st.markdown("### 🤖 AI-model")
+    settings = _api("GET", "/api/settings")
+    if settings:
+        provider = settings.get("provider", "ollama")
+        claude_available = settings.get("claude_available", False)
+        opties = ["🔒 Ollama (lokaal)", "⚡ Claude (cloud)"]
+        keuze = st.radio(
+            "Provider",
+            options=opties,
+            index=1 if provider == "claude" else 0,
+            label_visibility="collapsed",
+        )
+        gekozen = "claude" if keuze == opties[1] else "ollama"
+        if gekozen != provider:
+            if gekozen == "claude" and not claude_available:
+                st.error("Claude niet beschikbaar. Zet ANTHROPIC_API_KEY in config.env en herstart.")
+            else:
+                result = _api("POST", "/api/settings", json={"provider": gekozen})
+                if result:
+                    st.rerun()
+        if provider == "claude":
+            st.warning(
+                "⚠️ Contractdata wordt naar Anthropic gestuurd — alleen "
+                "gebruiken voor demo met voorbeeldcontracten."
+            )
+            st.caption(f"Model: {settings.get('claude_model', '')}")
+        elif not claude_available:
+            st.caption("Claude-demo: zet ANTHROPIC_API_KEY in config.env")
+
+    st.divider()
     st.markdown("### ⚙️ Beheer")
     st.divider()
     st.markdown("**Kennisbank resetten**")

@@ -113,6 +113,18 @@ pnpm test:coverage
 - SQLite op `data/kennisbank.db` (gitignored)
 - Geüploade bestanden in `uploads/` (gitignored)
 
+### Uitzondering: Claude demo-switch (expliciete opt-in)
+
+- Ollama is en blijft de standaardprovider; de regel "geen vervanging door
+  cloud API" blijft gelden
+- Voor demo's kan per sessie naar de Claude API geswitcht worden
+  (`LLM_PROVIDER`/UI-switch); dan gaat contractdata naar Anthropic —
+  alleen gebruiken met voorbeeldcontracten, nooit met echte contracten
+- Prompts, boundaries en filters zijn identiek voor beide providers
+  (gedeeld in `backend/llm_client.py`); de providers zelf zijn puur
+  transport (`ollama_client.py`, `claude_client.py`)
+- `ANTHROPIC_API_KEY` staat alleen in `config.env` (gitignored)
+
 ## Karpathy Gedragsregels
 
 ### 1. Think Before Coding

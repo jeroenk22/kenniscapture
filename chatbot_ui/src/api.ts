@@ -18,6 +18,31 @@ export interface StreamChunk {
 
 const API_BASE = `http://${window.location.hostname}:8000`;
 
+export interface LlmSettings {
+  provider: "ollama" | "claude";
+  claude_available: boolean;
+  claude_model: string;
+}
+
+export async function getSettings(): Promise<LlmSettings> {
+  const response = await fetch(`${API_BASE}/api/settings`);
+  if (!response.ok) {
+    throw new Error(`API fout: ${response.status} ${response.statusText}`);
+  }
+  return (await response.json()) as LlmSettings;
+}
+
+export async function setProvider(provider: "ollama" | "claude"): Promise<void> {
+  const response = await fetch(`${API_BASE}/api/settings`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ provider }),
+  });
+  if (!response.ok) {
+    throw new Error(`API fout: ${response.status} ${response.statusText}`);
+  }
+}
+
 export async function* sendMessageStream(
   message: string,
   history: ConversationMessage[],
