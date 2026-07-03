@@ -57,6 +57,19 @@ wacht_op_url() {
     return 1
 }
 
+wacht_op_poort() {
+    local poort=$1 naam=$2
+    for _ in $(seq 1 45); do
+        if (echo > "/dev/tcp/127.0.0.1/$poort") 2>/dev/null; then
+            return 0
+        fi
+        sleep 2
+    done
+    echo "❌ $naam (poort $poort) is niet opgekomen. Laatste service-log:"
+    tail -20 "$LOG_DIR/services.log" 2>/dev/null || true
+    return 1
+}
+
 opruimen() {
     echo ""
     echo "🛑 Tunnels stoppen..."
@@ -93,10 +106,17 @@ PUBLIC_API_BASE_URL=$API_URL
 CORS_ORIGINS=$CORS
 EOF
 
+# Via 'bash' aanroepen: werkt ook als het execute-bit/de NTFS-rechten
+# van de scripts niet meewerken (gezien op Windows Server)
 echo "♻️  Services herstarten met de publieke URLs..."
-"$ROOT_DIR/stop.sh" >/dev/null 2>&1 || true
-nohup "$ROOT_DIR/start.sh" >"$LOG_DIR/services.log" 2>&1 &
+bash "$ROOT_DIR/stop.sh" >/dev/null 2>&1 || true
+nohup bash "$ROOT_DIR/start.sh" >"$LOG_DIR/services.log" 2>&1 &
 PIDS+=($!)
+
+echo "⏳ Wachten tot de services luisteren..."
+wacht_op_poort "$PORT_BACKEND"   "Backend"    || exit 1
+wacht_op_poort "$PORT_STREAMLIT" "Kennisbank" || exit 1
+wacht_op_poort "$PORT_CHATBOT"   "Chatbot"    || exit 1
 
 echo ""
 echo "=================================================="
