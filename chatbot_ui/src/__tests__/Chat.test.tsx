@@ -35,6 +35,32 @@ describe("Chat component", () => {
     expect(button).not.toBeDisabled();
   });
 
+  it("versturen werkt ook zonder crypto.randomUUID (http via LAN-IP)", async () => {
+    // crypto.randomUUID bestaat alleen in secure contexts — simuleer een
+    // browser die de pagina via http://<ip> laadt
+    const origRandomUUID = globalThis.crypto.randomUUID;
+    // @ts-expect-error — bewust verwijderen voor deze test
+    globalThis.crypto.randomUUID = undefined;
+    try {
+      vi.mocked(api.sendMessageStream).mockImplementation(async function* () {
+        yield { token: "Antwoord zonder uuid" };
+        yield { done: true, sources: [] };
+      });
+
+      render(<Chat />);
+      const textarea = screen.getByPlaceholderText(/vraag/i);
+      await userEvent.type(textarea, "Werkt dit ook via een LAN-IP?");
+      await userEvent.keyboard("{Enter}");
+
+      expect(screen.getByText("Werkt dit ook via een LAN-IP?")).toBeInTheDocument();
+      await waitFor(() => {
+        expect(screen.getByText("Antwoord zonder uuid")).toBeInTheDocument();
+      });
+    } finally {
+      globalThis.crypto.randomUUID = origRandomUUID;
+    }
+  });
+
   it("verstuurt bericht en toont antwoord", async () => {
     vi.mocked(api.sendMessageStream).mockImplementation(async function* () {
       yield { token: "Een contract is een overeenkomst." };
