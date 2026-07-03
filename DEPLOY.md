@@ -4,9 +4,34 @@ Doel: het systeem draaien op de server (bijv. `192.168.4.105`) en de
 kenniscapture-tool, de chatbot én de API van buitenaf bereikbaar maken via
 Cloudflare, zonder poorten open te zetten op de router.
 
-> ⚠️ **Vertrouwelijke data.** De kennisbank bevat contractkennis. Zet de
-> Cloudflare-hostnames ALTIJD achter **Cloudflare Access** (stap 5) voordat je
-> de tunnel aanzet — anders staat alles open op het publieke internet.
+Er zijn twee routes:
+
+| | Route A: quick tunnels (`tunnel.sh`) | Route B: named tunnel (hieronder) |
+|---|---|---|
+| Cloudflare-account/domein | niet nodig | gratis account + eigen domein |
+| URLs | wisselen bij elke start | vast (`kc-chat.<domein>`) |
+| Afscherming (Access) | niet mogelijk | ja (gratis tot 50 gebruikers) |
+| Geschikt voor | eenmalige demo met fictieve data | structurele ontsluiting |
+
+> ⚠️ **Vertrouwelijke data.** De kennisbank bevat contractkennis. Gebruik
+> route A alleen met fictieve demo-data. Voor echte data: route B mét
+> **Cloudflare Access** (stap 5) vóórdat je de tunnel aanzet.
+
+## Route A — quick tunnels (geen account nodig)
+
+Eenmalig `cloudflared` installeren (`winget install Cloudflare.cloudflared`),
+daarna:
+
+```bash
+./tunnel.sh
+```
+
+Het script start drie tunnels (kennisbank, chatbot, backend-API), herstart de
+services met de juiste publieke URLs (via het gegenereerde `tunnel.env`) en
+print twee `*.trycloudflare.com`-links om te delen. Stoppen met Ctrl+C;
+daarna eenmalig `./stop.sh && ./start.sh` om weer op interne URLs te draaien.
+
+De rest van dit document beschrijft **route B**.
 
 ## 1. Vereisten op de server
 

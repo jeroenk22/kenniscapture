@@ -14,6 +14,13 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // Vite blokkeert standaard verzoeken met een onbekende Host-header;
+    // quick tunnels (tunnel.sh) en een eigen domein (VITE_ALLOWED_HOSTS,
+    // komma-gescheiden) moeten er expliciet doorheen
+    allowedHosts: [
+      ".trycloudflare.com",
+      ...(process.env.VITE_ALLOWED_HOSTS ? process.env.VITE_ALLOWED_HOSTS.split(",") : []),
+    ],
     proxy: {
       "/api": {
         target: "http://127.0.0.1:8000",

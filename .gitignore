@@ -22,6 +22,7 @@ voorbeeldcontracten/
 .env
 *.env.local
 config.env
+tunnel.env
 
 # Node
 chatbot_ui/node_modules/
