@@ -1,5 +1,6 @@
 import { ArrowUp, Square } from "lucide-react";
 import { useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
 import { cn } from "@/lib/utils";
 import { API_BASE, type ConversationMessage, type Source, sendMessageStream } from "../api";
 import { ChatContainerContent, ChatContainerRoot } from "./prompt-kit/chat-container";
@@ -124,7 +125,13 @@ export default function Chat() {
                       : "bg-secondary text-foreground rounded-3xl rounded-bl-sm px-4 py-2.5",
                   )}
                 >
-                  {msg.content}
+                  {isUser ? (
+                    msg.content
+                  ) : (
+                    <div className="chat-markdown">
+                      <ReactMarkdown>{msg.content}</ReactMarkdown>
+                    </div>
+                  )}
                 </MessageContent>
                 {msg.sources && msg.sources.length > 0 && (
                   <div className="flex flex-wrap gap-1 mt-1">
