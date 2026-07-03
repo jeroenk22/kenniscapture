@@ -95,6 +95,24 @@ describe("Chat component", () => {
     });
   });
 
+  it("rendert markdown in assistent-antwoorden (bold en bullets)", async () => {
+    vi.mocked(api.sendMessageStream).mockImplementation(async function* () {
+      yield { token: "**Belangrijk:**\n\n- eerste punt\n- tweede punt" };
+      yield { done: true, sources: [] };
+    });
+
+    render(<Chat />);
+    await userEvent.type(screen.getByPlaceholderText(/vraag/i), "Vertel over NDA's");
+    await userEvent.keyboard("{Enter}");
+
+    await waitFor(() => {
+      const bold = screen.getByText("Belangrijk:");
+      expect(bold.tagName).toBe("STRONG");
+    });
+    const items = screen.getAllByRole("listitem");
+    expect(items.map((li) => li.textContent)).toEqual(["eerste punt", "tweede punt"]);
+  });
+
   it("toont bronnen bij antwoord met sources", async () => {
     vi.mocked(api.sendMessageStream).mockImplementation(async function* () {
       yield { token: "Antwoord" };
