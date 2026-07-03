@@ -20,6 +20,15 @@ interface ChatMessage {
   sources?: Source[];
 }
 
+// crypto.randomUUID bestaat alleen in secure contexts (https/localhost) —
+// via een LAN-IP over http ontbreekt hij, dus altijd met fallback
+function newId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `msg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
 export default function Chat() {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
@@ -38,7 +47,7 @@ export default function Chat() {
     if (!text || isLoading) return;
 
     const userMessage: ChatMessage = {
-      id: crypto.randomUUID(),
+      id: newId(),
       role: "user",
       content: text,
     };
@@ -54,7 +63,7 @@ export default function Chat() {
     const controller = new AbortController();
     abortRef.current = controller;
 
-    const assistantId = crypto.randomUUID();
+    const assistantId = newId();
     setMessages((prev) => [...prev, { id: assistantId, role: "assistant", content: "" }]);
 
     try {
