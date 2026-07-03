@@ -10,6 +10,14 @@ if [ -f "$ROOT_DIR/config.env" ]; then
     set +a
 fi
 
+# Publieke tunnel-URLs (aangemaakt door tunnel.sh, alleen tijdens een
+# actieve quick-tunnelsessie — wordt bij het stoppen weer verwijderd)
+if [ -f "$ROOT_DIR/tunnel.env" ]; then
+    set -a
+    source "$ROOT_DIR/tunnel.env"
+    set +a
+fi
+
 # Standaardwaarden
 HOST="${HOST:-127.0.0.1}"
 PORT_BACKEND="${PORT_BACKEND:-8000}"
