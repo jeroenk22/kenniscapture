@@ -1,7 +1,7 @@
 import { ArrowUp, Square } from "lucide-react";
 import { useRef, useState } from "react";
 import { cn } from "@/lib/utils";
-import { type ConversationMessage, type Source, sendMessageStream } from "../api";
+import { API_BASE, type ConversationMessage, type Source, sendMessageStream } from "../api";
 import { ChatContainerContent, ChatContainerRoot } from "./prompt-kit/chat-container";
 import { Loader } from "./prompt-kit/loader";
 import { Message, MessageContent } from "./prompt-kit/message";
@@ -122,8 +122,9 @@ export default function Chat() {
                     {msg.sources.map((source) => (
                       <a
                         key={`${source.file}:${source.topic_label}`}
-                        href={`http://${window.location.hostname}:8000/api/download/${encodeURIComponent(source.file)}`}
-                        download={source.file}
+                        href={`${API_BASE}/api/download/${encodeURIComponent(source.file)}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
                         className="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded-full hover:bg-muted/70 cursor-pointer no-underline"
                         title={
                           source.passage

@@ -1,7 +1,9 @@
 """Streamlit kenniscapture tool — Tabblad 1: Kenniscapture | Tabblad 2: Kennisbank."""
+import html
 import logging
 import os
 import time
+import urllib.parse
 from pathlib import Path
 
 import httpx
@@ -11,6 +13,9 @@ logging.basicConfig(level=logging.INFO)
 _log = logging.getLogger("kenniscapture_ui")
 
 API_BASE = os.getenv("API_BASE_URL", "http://localhost:8000")
+# Links die de gebruiker in de browser opent (documentpreviews) — achter een
+# tunnel/reverse proxy wijkt de publieke API-URL af van de interne.
+PUBLIC_API_BASE = os.getenv("PUBLIC_API_BASE_URL", API_BASE)
 
 st.set_page_config(
     page_title="Kenniscapture — Ten Brinke",
@@ -41,11 +46,11 @@ def _backend_bereikbaar() -> bool:
         return False
 
 
-def _api(method: str, path: str, **kwargs) -> dict:
+def _api(method: str, path: str, timeout: float = 600.0, **kwargs) -> dict:
     """Roep de FastAPI backend aan."""
     url = f"{API_BASE}{path}"
     try:
-        resp = httpx.request(method, url, timeout=600.0, **kwargs)
+        resp = httpx.request(method, url, timeout=timeout, **kwargs)
         resp.raise_for_status()
         return resp.json()
     except httpx.ConnectError:
@@ -64,6 +69,7 @@ def _init_session():
         "upload_result": None,
         "upload_queue": [],       # lijst van {name, data, type} wachtend op analyse
         "upload_results": [],     # afgeronde resultaten om te tonen
+        "exhausted_documents": [],  # bestandsnamen zonder nog te stellen vragen (voorkomt ping-pong tussen documenten)
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -100,6 +106,36 @@ def _get_completion() -> dict:
 
 # === Sidebar ===
 with st.sidebar:
+    st.markdown("### 🤖 AI-model")
+    settings = _api("GET", "/api/settings")
+    if settings:
+        provider = settings.get("provider", "ollama")
+        claude_available = settings.get("claude_available", False)
+        opties = ["🔒 Ollama (lokaal)", "⚡ Claude (cloud)"]
+        keuze = st.radio(
+            "Provider",
+            options=opties,
+            index=1 if provider == "claude" else 0,
+            label_visibility="collapsed",
+        )
+        gekozen = "claude" if keuze == opties[1] else "ollama"
+        if gekozen != provider:
+            if gekozen == "claude" and not claude_available:
+                st.error("Claude niet beschikbaar. Zet ANTHROPIC_API_KEY in config.env en herstart.")
+            else:
+                result = _api("POST", "/api/settings", json={"provider": gekozen})
+                if result:
+                    st.rerun()
+        if provider == "claude":
+            st.warning(
+                "⚠️ Contractdata wordt naar Anthropic gestuurd — alleen "
+                "gebruiken voor demo met voorbeeldcontracten."
+            )
+            st.caption(f"Model: {settings.get('claude_model', '')}")
+        elif not claude_available:
+            st.caption("Claude-demo: zet ANTHROPIC_API_KEY in config.env")
+
+    st.divider()
     st.markdown("### ⚙️ Beheer")
     st.divider()
     st.markdown("**Kennisbank resetten**")
@@ -228,9 +264,14 @@ with tab1:
             st.session_state.current_question = None
         else:
             # Fase 2 — Ollama analyse
-            status.caption("🤖 AI herkent contracttype en topics — even geduld...")
+            status.caption("🤖 AI leest het volledige contract door en zoekt alle relevante clausules — dit kan enkele minuten duren...")
             prog.progress(45)
-            analysis = _api("POST", f"/api/analyze-document/{parse_result['doc_id']}")
+            # Volledige doorlichting van lange contracten kan op CPU lang duren
+            analysis = _api(
+                "POST",
+                f"/api/analyze-document/{parse_result['doc_id']}",
+                timeout=1800.0,
+            )
 
             if not analysis or not analysis.get("detected_topics"):
                 prog.progress(100)
@@ -285,9 +326,13 @@ with tab1:
         if not st.session_state.current_question:
             detected_topics_full = doc.get("detected_topics", [])
             detected_topic_keys = [t.get("topic", "") for t in detected_topics_full]
-            # Passages per topic zodat de backend de juiste kan opzoeken
+            # Passages en paginanummers per topic zodat de backend de juiste kan opzoeken
             passages_by_topic = {
                 t.get("topic", ""): t.get("passage", "")
+                for t in detected_topics_full
+            }
+            pages_by_topic = {
+                t.get("topic", ""): t.get("page")
                 for t in detected_topics_full
             }
 
@@ -301,6 +346,7 @@ with tab1:
                         "detected_topics": detected_topic_keys,
                         "source_passage": "",
                         "passages_by_topic": passages_by_topic,
+                        "pages_by_topic": pages_by_topic,
                         "source_file": doc.get("filename", ""),
                     },
                 )
@@ -308,13 +354,17 @@ with tab1:
                     st.session_state.current_question = question_data
                 else:
                     st.success(f"🎉 Alle vragen voor **{doc.get('filename', 'dit document')}** zijn beantwoord!")
+                    if doc.get("filename") not in st.session_state.exhausted_documents:
+                        st.session_state.exhausted_documents.append(doc.get("filename"))
                     st.session_state.current_document = None
                     st.session_state.current_question = None
                     # Controleer of er nog andere documenten zijn met openstaande vragen
+                    # (nooit al uitgeputte documenten opnieuw proberen — voorkomt een oneindige lus)
                     docs_data = _api("GET", "/api/documents")
                     remaining = [
                         d for d in docs_data.get("documents", [])
-                        if d["filename"] != doc.get("filename") and d.get("detected_topics")
+                        if d["filename"] not in st.session_state.exhausted_documents
+                        and d.get("detected_topics")
                     ]
                     if remaining:
                         next_doc = remaining[0]
@@ -337,12 +387,29 @@ with tab1:
 
             if source_passage:
                 page_label = f" · pagina {source_page}" if source_page else ""
-                st.info(
-                    f"📄 **Gevonden in:** {source_file}{page_label}\n\n"
-                    f'*"{source_passage}"*'
+                safe_file = html.escape(source_file, quote=True)
+                safe_passage = html.escape(source_passage, quote=True)
+                safe_page = html.escape(page_label, quote=True)
+                encoded_file = urllib.parse.quote(source_file, safe="")
+                preview_url = f"{PUBLIC_API_BASE}/api/download/{encoded_file}"
+                st.markdown(
+                    f'📄 <strong>Gevonden in:</strong> '
+                    f'<a href="{preview_url}" target="_blank">{safe_file}</a>'
+                    f'{safe_page}'
+                    f'<br><em>"{safe_passage}"</em>',
+                    unsafe_allow_html=True,
                 )
             elif source_file:
-                st.caption(f"📄 Vraag gebaseerd op: **{source_file}** — onderwerp: {q.get('topic_label', '')}")
+                safe_file = html.escape(source_file, quote=True)
+                safe_topic = html.escape(q.get("topic_label", ""), quote=True)
+                encoded_file = urllib.parse.quote(source_file, safe="")
+                preview_url = f"{PUBLIC_API_BASE}/api/download/{encoded_file}"
+                st.markdown(
+                    f'📄 Vraag gebaseerd op: '
+                    f'<a href="{preview_url}" target="_blank"><strong>{safe_file}</strong></a>'
+                    f" — onderwerp: {safe_topic}",
+                    unsafe_allow_html=True,
+                )
             else:
                 st.caption(f"📄 Algemene kennisbankvraag — onderwerp: {q.get('topic_label', '')}")
 

@@ -87,4 +87,26 @@ describe("Chat component", () => {
       expect(screen.getByText("Contractrecht")).toBeInTheDocument();
     });
   });
+
+  it("bronlink opent in nieuw tabblad zodat de chatgeschiedenis behouden blijft", async () => {
+    vi.mocked(api.sendMessageStream).mockImplementation(async function* () {
+      yield { token: "Antwoord" };
+      yield {
+        done: true,
+        sources: [{ file: "contract.pdf", topic_label: "Contractrecht", passage: "", page: null }],
+      };
+    });
+
+    render(<Chat />);
+    const textarea = screen.getByPlaceholderText(/vraag/i);
+    await userEvent.type(textarea, "Vraag over bronnen");
+    await userEvent.keyboard("{Enter}");
+
+    await waitFor(() => {
+      const link = screen.getByText("Contractrecht").closest("a");
+      expect(link).toHaveAttribute("target", "_blank");
+      expect(link).toHaveAttribute("rel", "noopener noreferrer");
+      expect(link).not.toHaveAttribute("download");
+    });
+  });
 });

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { sendMessage, sendMessageStream } from "../api";
+import { getSettings, sendMessage, sendMessageStream, setProvider } from "../api";
 
 function makeSSEStream(...events: object[]) {
   const text = events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("");
@@ -84,5 +84,57 @@ describe("sendMessage", () => {
     const result = await sendMessage("test", []);
     expect(result.answer).toBe("Antwoord");
     expect(result.sources).toEqual([]);
+  });
+});
+
+describe("getSettings", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  it("geeft de settings terug", async () => {
+    const settings = {
+      provider: "ollama",
+      claude_available: true,
+      claude_model: "claude-sonnet-5",
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => settings }));
+
+    expect(await getSettings()).toEqual(settings);
+  });
+
+  it("gooit fout bij niet-ok response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: false, status: 500, statusText: "Error" }),
+    );
+
+    await expect(getSettings()).rejects.toThrow("API fout: 500");
+  });
+});
+
+describe("setProvider", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  it("POST de gekozen provider", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await setProvider("claude");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/settings"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ provider: "claude" }),
+      }),
+    );
+  });
+
+  it("gooit fout bij niet-ok response (bijv. geen API-key)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: false, status: 400, statusText: "Bad Request" }),
+    );
+
+    await expect(setProvider("claude")).rejects.toThrow("API fout: 400");
   });
 });

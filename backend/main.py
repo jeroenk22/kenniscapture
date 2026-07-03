@@ -2,21 +2,28 @@
 
 import asyncio
 import hashlib
+import html
 import json
 import logging
 import os
+import re
+import urllib.parse
 import uuid
 from pathlib import Path
 
+import mammoth
 import aiofiles
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
+import claude_client
 import database
 import document_parser
 import knowledge_engine
+import llm_client
+import llm_settings
 import ollama_client
 
 logging.basicConfig(
@@ -55,7 +62,7 @@ async def startup() -> None:
     database.init_db()
     _log.info("Database geinitialiseerd — Ollama model voorladen...")
     try:
-        await ollama_client._ollama_request("ping")
+        await ollama_client.generate("ping")
         _log.info("Ollama model geladen — API klaar")
     except Exception as exc:
         _log.warning("Ollama warmup mislukt (niet fataal): %s", exc)
@@ -71,6 +78,7 @@ class GenerateQuestionRequest(BaseModel):
     source_passage: str
     source_file: str
     passages_by_topic: dict[str, str] = {}
+    pages_by_topic: dict[str, int | None] = {}
 
 
 class SaveAnswerRequest(BaseModel):
@@ -92,6 +100,14 @@ class SkipQuestionRequest(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     conversation_history: list[dict[str, str]]
+
+
+class SettingsRequest(BaseModel):
+    provider: str  # "ollama" | "claude"
+
+
+def _question_hash(question: str) -> str:
+    return hashlib.md5(question.lower().strip().encode()).hexdigest()
 
 
 # === Endpoints ===
@@ -145,7 +161,7 @@ async def upload_document(file: UploadFile = File(...)):
     topics_list = [t["topic"] for t in all_topics]
 
     try:
-        analysis = await ollama_client.analyze_document(text[:5000], topics_list)
+        analysis = await llm_client.analyze_document(text, topics_list)
     except Exception as exc:
         _log.warning("Ollama analyse mislukt: %s", exc, exc_info=True)
         analysis = {"contract_type": "anders", "detected_topics": []}
@@ -276,7 +292,7 @@ async def analyze_document_endpoint(doc_id: int):
     topics_list = [t["topic"] for t in all_topics]
 
     try:
-        analysis = await ollama_client.analyze_document(text[:5000], topics_list)
+        analysis = await llm_client.analyze_document(text, topics_list)
     except Exception as exc:
         _log.warning("Ollama analyse mislukt: %s", exc, exc_info=True)
         analysis = {"contract_type": "anders", "detected_topics": []}
@@ -322,12 +338,20 @@ async def generate_question(req: GenerateQuestionRequest):
 
     # Gebruik de passage die bij dit specifieke topic hoort
     passage = req.passages_by_topic.get(next_topic["topic"], req.source_passage)
+    if not passage or not passage.strip():
+        # Geen echte contractpassage beschikbaar — nooit een vraag verzinnen
+        # zonder gegronde context uit het document.
+        _log.warning(
+            "Geen passage gevonden voor topic %s — vraag overgeslagen",
+            next_topic["topic"],
+        )
+        return {"has_question": False}
 
     asked = database.get_asked_questions(req.contract_type, next_topic["topic"])
     asked_list = [q["question"] for q in asked]
 
     try:
-        result = await ollama_client.generate_question(
+        result = await llm_client.generate_question(
             contract_type=req.contract_type,
             passage=passage,
             topic_label=next_topic["topic_label"],
@@ -339,13 +363,12 @@ async def generate_question(req: GenerateQuestionRequest):
         question_text = f"Kun je meer vertellen over: {next_topic['topic_label']}?"
 
     question_id = f"q_{uuid.uuid4().hex[:8]}"
-    question_hash = hashlib.md5(question_text.lower().strip().encode()).hexdigest()
 
     database.save_asked_question(
         contract_type=req.contract_type,
         topic=next_topic["topic"],
         question=question_text,
-        question_hash=question_hash,
+        question_hash=_question_hash(question_text),
     )
 
     return {
@@ -355,7 +378,7 @@ async def generate_question(req: GenerateQuestionRequest):
         "topic_label": next_topic["topic_label"],
         "source_passage": passage,
         "source_file": req.source_file,
-        "source_page": None,
+        "source_page": req.pages_by_topic.get(next_topic["topic"]),
         "has_question": True,
     }
 
@@ -372,7 +395,7 @@ async def save_answer(req: SaveAnswerRequest):
         source_passage=req.source_passage,
         source_page=req.source_page,
     )
-    database.mark_question_answered(req.question_id)
+    database.mark_question_answered(_question_hash(req.question))
     completion = knowledge_engine.calculate_completion()
     return {"chunk_id": chunk_id, "completion": completion}
 
@@ -437,22 +460,103 @@ async def reset():
     return {"status": "ok"}
 
 
+@app.get("/api/settings")
+async def get_settings():
+    return {
+        "provider": llm_settings.get_provider(),
+        "claude_available": claude_client.is_available(),
+        "claude_model": claude_client.CLAUDE_MODEL,
+    }
+
+
+@app.post("/api/settings")
+async def set_settings(req: SettingsRequest):
+    if req.provider not in llm_settings.PROVIDERS:
+        raise HTTPException(
+            status_code=400, detail=f"Onbekende provider: {req.provider}"
+        )
+    if req.provider == "claude" and not claude_client.is_available():
+        raise HTTPException(
+            status_code=400,
+            detail="Claude niet beschikbaar: zet ANTHROPIC_API_KEY in config.env",
+        )
+    llm_settings.set_provider(req.provider)
+    return {"provider": llm_settings.get_provider()}
+
+
+# Max aantal tekens kennisbank-context in de chat-prompt (hele chunks)
+_KENNIS_BUDGET = 6000
+_SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+
+def _zoekwoorden(text: str) -> set[str]:
+    """Woorden langer dan 4 tekens, zonder leestekens — voor trefwoord-matching."""
+    return {w for w in re.findall(r"\w+", text.lower()) if len(w) > 4}
+
+
+def _chunk_woorden(chunk: dict) -> set[str]:
+    return _zoekwoorden(
+        " ".join(
+            str(chunk.get(veld) or "") for veld in ("topic_label", "question", "answer")
+        )
+    )
+
+
+def _chunk_context(chunk: dict) -> str:
+    return (
+        f"[{chunk['topic_label']} | Bron: {chunk['source_file']}"
+        + (f" (pagina {chunk['source_page']})" if chunk.get("source_page") else "")
+        + f"]\nV: {chunk['question']}\nA: {chunk['answer']}"
+    )
+
+
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
     chunks = database.get_all_chunks()
-    used_chunks = chunks[:20]
 
-    knowledge_str = "\n\n".join(
-        f"[{c['topic_label']} | Bron: {c['source_file']}"
-        + (f" (pagina {c['source_page']})" if c.get("source_page") else "")
-        + f"]\nV: {c['question']}\nA: {c['answer']}"
-        for c in used_chunks
+    if not chunks:
+        # Lege kennisbank: nooit Ollama laten "antwoorden" zonder enige kennis
+        async def empty_stream():
+            msg = (
+                "De kennisbank is nog leeg. Er zijn nog geen antwoorden "
+                "vastgelegd in de kenniscapture tool, dus ik kan deze vraag "
+                "niet beantwoorden."
+            )
+            yield f"data: {json.dumps({'token': msg})}\n\n"
+            yield f"data: {json.dumps({'done': True, 'sources': []})}\n\n"
+
+        return StreamingResponse(
+            empty_stream(), media_type="text/event-stream", headers=_SSE_HEADERS
+        )
+
+    # Selecteer de chunks die het meest relevant zijn voor DEZE vraag i.p.v.
+    # gewoon de meest recent aangemaakte — anders valt oudere kennis buiten
+    # het gestuurde context-venster en lijkt de kennisbank "leeg".
+    question_words = _zoekwoorden(req.message)
+    ranked_chunks = sorted(
+        chunks,
+        key=lambda c: len(question_words & _chunk_woorden(c)),
+        reverse=True,
     )
+
+    # Vul de context met hele chunks tot het budget vol is — een half
+    # doorgeknipte chunk levert onbruikbare context op.
+    used_chunks: list[dict] = []
+    parts: list[str] = []
+    total = 0
+    for c in ranked_chunks:
+        part = _chunk_context(c)
+        if used_chunks and total + len(part) > _KENNIS_BUDGET:
+            break
+        used_chunks.append(c)
+        parts.append(part)
+        total += len(part) + 2
+    knowledge_str = "\n\n".join(parts)
 
     async def event_stream():
         full_text = ""
         try:
-            async for token in ollama_client.chat_stream(
+            async for token in llm_client.chat_stream(
                 message=req.message,
                 history=req.conversation_history,
                 knowledge_chunks=knowledge_str,
@@ -466,43 +570,40 @@ async def chat(req: ChatRequest):
             yield f"data: {json.dumps({'token': error_msg})}\n\n"
             full_text = error_msg
 
-        # Zoek de meest relevante chunks op basis van trefwoorden in het antwoord
-        answer_words = {w.lower() for w in full_text.split() if len(w) > 4}
-        seen_keys: set[str] = set()
-        scored: list[tuple[int, dict]] = []
-        for chunk in used_chunks:
-            topic_words = set((chunk.get("topic_label") or "").lower().split())
-            q_words = set((chunk.get("question") or "").lower().split())
-            a_words = set((chunk.get("answer") or "").lower().split())
-            matches = len(answer_words & (topic_words | q_words | a_words))
-            scored.append((matches, chunk))
-        scored.sort(key=lambda x: -x[0])
-
+        # Zoek de meest relevante chunks op basis van trefwoorden in het
+        # antwoord. Geen bronnen bij een "weet het niet"-antwoord — dat wekt
+        # ten onrechte de indruk dat het antwoord ergens op gebaseerd is.
         sources = []
-        for _, chunk in scored[:5]:
-            key = f"{chunk.get('source_file')}|{chunk.get('topic_label')}"
-            if key not in seen_keys:
-                seen_keys.add(key)
-                sources.append(
-                    {
-                        "file": chunk.get("source_file", ""),
-                        "topic_label": chunk.get("topic_label", ""),
-                        "passage": chunk.get("source_passage", ""),
-                        "page": chunk.get("source_page"),
-                    }
-                )
+        if "geen verdere informatie" not in full_text.lower():
+            answer_words = _zoekwoorden(full_text)
+            scored = [(len(answer_words & _chunk_woorden(c)), c) for c in used_chunks]
+            scored.sort(key=lambda x: -x[0])
+
+            seen_keys: set[str] = set()
+            for matches, chunk in scored[:5]:
+                if matches == 0:
+                    continue
+                key = f"{chunk.get('source_file')}|{chunk.get('topic_label')}"
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    sources.append(
+                        {
+                            "file": chunk.get("source_file", ""),
+                            "topic_label": chunk.get("topic_label", ""),
+                            "passage": chunk.get("source_passage", ""),
+                            "page": chunk.get("source_page"),
+                        }
+                    )
 
         yield f"data: {json.dumps({'done': True, 'sources': sources})}\n\n"
 
     return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        event_stream(), media_type="text/event-stream", headers=_SSE_HEADERS
     )
 
 
 @app.get("/api/download/{filename:path}")
-async def download_file(filename: str):
+async def download_file(filename: str, raw: bool = False):
     doc = database.get_document_by_filename(filename)
     if not doc:
         raise HTTPException(status_code=404, detail="Bestand niet gevonden in database")
@@ -512,6 +613,67 @@ async def download_file(filename: str):
         raise HTTPException(
             status_code=404, detail="Bestand niet meer aanwezig op disk"
         )
+    # Sanitize bestandsnaam voor Content-Disposition header (RFC 6266)
+    safe_name = re.sub(r'["\r\n\\]', "", filename)
+    encoded_name = urllib.parse.quote(filename)
+    if suffix == ".pdf":
+        return FileResponse(
+            path=file_path,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"inline; filename=\"{safe_name}\"; filename*=UTF-8''{encoded_name}",
+                "X-Content-Type-Options": "nosniff",
+                "Content-Security-Policy": "default-src 'none'; script-src 'none'",
+            },
+        )
+    if suffix == ".docx" and not raw:
+        try:
+            with open(file_path, "rb") as f:
+                result = mammoth.convert_to_html(f)
+            html_body = result.value
+        except Exception as exc:
+            _log.warning("DOCX→HTML conversie mislukt voor %s: %s", filename, exc)
+            raise HTTPException(
+                status_code=422, detail="Bestand kan niet worden weergegeven"
+            ) from exc
+        escaped_name = html.escape(filename)
+        raw_url = f"/api/download/{encoded_name}?raw=true"
+        html_page = f"""<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <title>{escaped_name}</title>
+  <style>
+    body {{ font-family: Calibri, Arial, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 24px; line-height: 1.6; color: #222; }}
+    table {{ border-collapse: collapse; width: 100%; margin: 1em 0; }}
+    td, th {{ border: 1px solid #ccc; padding: 6px 10px; }}
+    h1, h2, h3 {{ color: #1a1a2e; }}
+    p {{ margin: 0.5em 0; }}
+    .preview-header {{ display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #eee; padding-bottom: 8px; }}
+    .preview-header span {{ color: #666; font-size: 0.9em; }}
+    .download-btn {{ color: #fff; background: #e74c3c; padding: 6px 14px; border-radius: 4px; text-decoration: none; font-size: 0.85em; }}
+  </style>
+</head>
+<body>
+  <div class="preview-header">
+    <span>{escaped_name}</span>
+    <a class="download-btn" href="{raw_url}">⬇️ Origineel downloaden</a>
+  </div>
+  {html_body}
+</body>
+</html>"""
+        return HTMLResponse(
+            content=html_page,
+            headers={
+                "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:; script-src 'none'",
+                "X-Content-Type-Options": "nosniff",
+                "Referrer-Policy": "no-referrer",
+            },
+        )
     return FileResponse(
-        path=file_path, filename=filename, media_type="application/octet-stream"
+        path=file_path,
+        headers={
+            "Content-Disposition": f"attachment; filename=\"{safe_name}\"; filename*=UTF-8''{encoded_name}",
+            "X-Content-Type-Options": "nosniff",
+        },
     )

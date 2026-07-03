@@ -1,8 +1,6 @@
 """Integratietests voor FastAPI endpoints (echte DB, gemockte Ollama)."""
-import io
 import json
 import sys
-import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -153,16 +151,18 @@ def test_generate_question_geen_topics(client):
 
 def test_generate_question_met_topic(client):
     mock_result = AsyncMock(return_value={"question": "Wat is de looptijd?"})
-    with patch("ollama_client.generate_question", mock_result):
+    with patch("llm_client.generate_question", mock_result):
         resp = client.post(
             "/api/generate-question",
             json={
                 "document_id": 1,
                 "contract_type": "NDA",
-                "detected_topics": ["geheimhouding"],
+                "detected_topics": ["geheimhouding_scope"],
                 "source_passage": "Partijen houden informatie geheim.",
                 "source_file": "nda.pdf",
-                "passages_by_topic": {"geheimhouding": "Partijen houden informatie geheim."},
+                "passages_by_topic": {
+                    "geheimhouding_scope": "Partijen houden informatie geheim."
+                },
             },
         )
     assert resp.status_code == 200
@@ -171,14 +171,110 @@ def test_generate_question_met_topic(client):
     assert "question" in data
 
 
-def test_generate_question_ollama_fout(client):
-    with patch("ollama_client.generate_question", side_effect=RuntimeError("Ollama down")):
+def test_generate_question_geen_overlap_met_catalogus(client):
+    """Een gedetecteerd topic dat niet in de onderwerpencatalogus staat levert geen vraag op."""
+    resp = client.post(
+        "/api/generate-question",
+        json={
+            "document_id": 1,
+            "contract_type": "NDA",
+            "detected_topics": ["onderwerp_dat_niet_bestaat"],
+            "source_passage": "Tekst",
+            "source_file": "nda.pdf",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["has_question"] is False
+
+
+def test_generate_question_zonder_passage_geeft_geen_vraag(client):
+    """Zonder gegronde passage wordt nooit een vraag verzonnen, ook al is het topic bekend."""
+    resp = client.post(
+        "/api/generate-question",
+        json={
+            "document_id": 1,
+            "contract_type": "NDA",
+            "detected_topics": ["geheimhouding_scope"],
+            "source_passage": "",
+            "source_file": "nda.pdf",
+            "passages_by_topic": {},
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["has_question"] is False
+
+
+def test_generate_question_geeft_paginanummer_terug(client):
+    """Het paginanummer van de gevonden passage komt terug in de vraag,
+    zodat het via save-answer in de kennisbank belandt."""
+    mock_result = AsyncMock(return_value={"question": "Waarom deze scope?"})
+    with patch("llm_client.generate_question", mock_result):
         resp = client.post(
             "/api/generate-question",
             json={
                 "document_id": 1,
                 "contract_type": "NDA",
-                "detected_topics": ["geheimhouding"],
+                "detected_topics": ["geheimhouding_scope"],
+                "source_passage": "",
+                "source_file": "nda.pdf",
+                "passages_by_topic": {
+                    "geheimhouding_scope": "Partijen houden informatie geheim."
+                },
+                "pages_by_topic": {"geheimhouding_scope": 3},
+            },
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["has_question"] is True
+    assert data["source_page"] == 3
+
+
+def test_save_answer_markeert_juiste_vraag_beantwoord(client, tmp_path):
+    """save-answer markeert exact de beantwoorde vraag als answered,
+    ook als er daarna al een nieuwere vraag is gesteld."""
+    import hashlib
+
+    with patch("database.DB_PATH", tmp_path / "test.db"):
+        import database
+
+        oud = "Waarom een boeteclausule?"
+        nieuw = "Waarom deze looptijd?"
+        database.save_asked_question(
+            "NDA", "boeteclausule_wanneer", oud,
+            hashlib.md5(oud.lower().strip().encode()).hexdigest(),
+        )
+        database.save_asked_question(
+            "NDA", "looptijd_bepalen", nieuw,
+            hashlib.md5(nieuw.lower().strip().encode()).hexdigest(),
+        )
+
+    payload = {
+        "question_id": "q_oudere",
+        "question": oud,
+        "answer": "Als stok achter de deur bij schending",
+        "topic": "boeteclausule_wanneer",
+        "contract_type": "NDA",
+        "source_file": "nda.pdf",
+        "source_passage": "Boete van EUR 10.000 per overtreding.",
+        "source_page": None,
+    }
+    assert client.post("/api/save-answer", json=payload).status_code == 200
+
+    with patch("database.DB_PATH", tmp_path / "test.db"):
+        rows = database.get_asked_questions("NDA", "boeteclausule_wanneer")
+        assert rows[0]["answered"] == 1
+        rows = database.get_asked_questions("NDA", "looptijd_bepalen")
+        assert rows[0]["answered"] == 0
+
+
+def test_generate_question_ollama_fout(client):
+    with patch("llm_client.generate_question", side_effect=RuntimeError("Ollama down")):
+        resp = client.post(
+            "/api/generate-question",
+            json={
+                "document_id": 1,
+                "contract_type": "NDA",
+                "detected_topics": ["geheimhouding_scope"],
                 "source_passage": "Tekst",
                 "source_file": "nda.pdf",
             },
@@ -205,7 +301,7 @@ def test_upload_document_pdf(client, tmp_path):
     )
     with (
         patch("document_parser.parse_pdf", mock_parse),
-        patch("ollama_client.analyze_document", mock_analyse),
+        patch("llm_client.analyze_document", mock_analyse),
         patch("main.UPLOAD_DIR", tmp_path),
     ):
         resp = client.post(
@@ -320,7 +416,7 @@ def test_upload_document_docx(client, tmp_path):
     )
     with (
         patch("document_parser.parse_docx", mock_parse),
-        patch("ollama_client.analyze_document", mock_analyse),
+        patch("llm_client.analyze_document", mock_analyse),
         patch("main.UPLOAD_DIR", tmp_path),
     ):
         resp = client.post(
@@ -352,7 +448,7 @@ def test_analyze_document_succes(client, tmp_path):
     )
     with (
         patch("document_parser.parse_pdf", mock_parse),
-        patch("ollama_client.analyze_document", mock_analyse),
+        patch("llm_client.analyze_document", mock_analyse),
         patch("main.UPLOAD_DIR", tmp_path),
     ):
         resp = client.post(f"/api/analyze-document/{doc_id}")
@@ -423,7 +519,7 @@ async def _fake_stream(*_args, **_kwargs):
 
 
 def test_chat_stream(client):
-    with patch("ollama_client.chat_stream", _fake_stream):
+    with patch("llm_client.chat_stream", _fake_stream):
         resp = client.post(
             "/api/chat",
             json={"message": "Wat is een NDA?", "conversation_history": []},
@@ -435,14 +531,516 @@ def test_chat_stream(client):
 
 
 def test_chat_stream_ollama_fout(client):
+    # Kennisbank moet gevuld zijn, anders komt de lege-kennisbank kortsluiting
+    # eerst en wordt Ollama nooit aangeroepen.
+    payload = {
+        "question_id": "q_fout",
+        "question": "Wat is de looptijd?",
+        "answer": "Twee jaar",
+        "topic": "looptijd_bepalen",
+        "contract_type": "NDA",
+        "source_file": "nda.pdf",
+        "source_passage": "Looptijd van twee jaar.",
+        "source_page": None,
+    }
+    assert client.post("/api/save-answer", json=payload).status_code == 200
+
     async def fout_stream(*_args, **_kwargs):
         raise RuntimeError("Ollama niet bereikbaar")
         yield  # noqa: unreachable
 
-    with patch("ollama_client.chat_stream", fout_stream):
+    with patch("llm_client.chat_stream", fout_stream):
         resp = client.post(
             "/api/chat",
             json={"message": "Vraag", "conversation_history": []},
         )
     assert resp.status_code == 200
-    assert "fout" in resp.text.lower() or "token" in resp.text
+    assert "fout" in resp.text.lower()
+
+
+def test_chat_lege_kennisbank_slaat_ollama_over(client):
+    """Bij een lege kennisbank komt er een vast antwoord — Ollama wordt nooit
+    aangeroepen, dus er kan ook niets verzonnen worden."""
+
+    async def mag_niet_aangeroepen_worden(*_args, **_kwargs):
+        raise AssertionError("Ollama mag niet aangeroepen worden bij lege kennisbank")
+        yield  # noqa: unreachable
+
+    with patch("llm_client.chat_stream", mag_niet_aangeroepen_worden):
+        resp = client.post(
+            "/api/chat",
+            json={"message": "Wat is de proeftijd?", "conversation_history": []},
+        )
+    assert resp.status_code == 200
+    assert "kennisbank is nog leeg" in resp.text.lower()
+    assert '"sources": []' in resp.text
+
+
+def test_chat_geen_bronnen_bij_geen_informatie_antwoord(client):
+    """Als het model aangeeft dat de kennisbank niets bevat, mogen er geen
+    bronbadges getoond worden — dat wekt ten onrechte vertrouwen."""
+    payload = {
+        "question_id": "q_bron",
+        "question": "Wat is de betaaltermijn?",
+        "answer": "Dertig dagen na factuurdatum vanwege de informatie uit inkoopbeleid",
+        "topic": "betaaltermijn_bepalen",
+        "contract_type": "leverancier",
+        "source_file": "leverancier.pdf",
+        "source_passage": "Betaling binnen 30 dagen.",
+        "source_page": 2,
+    }
+    assert client.post("/api/save-answer", json=payload).status_code == 200
+
+    async def fake_stream(*_args, **_kwargs):
+        yield "De kennisbank bevat hierover geen verdere informatie."
+
+    with patch("llm_client.chat_stream", fake_stream):
+        resp = client.post(
+            "/api/chat",
+            json={"message": "Iets heel anders?", "conversation_history": []},
+        )
+    assert resp.status_code == 200
+    assert '"sources": []' in resp.text
+
+
+def test_chat_ranking_negeert_leestekens(client):
+    """'proeftijd?' in de vraag moet gewoon matchen op 'proeftijd' in een chunk."""
+    payload = {
+        "question_id": "q_leesteken",
+        "question": "Waarom twee maanden proeftijd",
+        "answer": "Proeftijd van twee maanden geeft voldoende beoordelingstijd",
+        "topic": "proeftijd_duur",
+        "contract_type": "arbeidscontract",
+        "source_file": "contract.pdf",
+        "source_passage": "Proeftijd van twee maanden.",
+        "source_page": 1,
+    }
+    assert client.post("/api/save-answer", json=payload).status_code == 200
+
+    for i in range(20):
+        vuller = {
+            "question_id": f"q_leestekenvuller_{i}",
+            "question": f"Vulvraag {i} over garantie",
+            "answer": f"Vulantwoord {i} over garantietermijnen",
+            "topic": "garantie_clausule",
+            "contract_type": "leverancier",
+            "source_file": "leverancier.pdf",
+            "source_passage": "Garantie van twaalf maanden.",
+            "source_page": None,
+        }
+        assert client.post("/api/save-answer", json=vuller).status_code == 200
+
+    captured = {}
+
+    async def fake_stream(*_args, **kwargs):
+        captured["knowledge_chunks"] = kwargs.get("knowledge_chunks", "")
+        yield "Antwoord"
+
+    with patch("llm_client.chat_stream", fake_stream):
+        resp = client.post(
+            "/api/chat",
+            json={"message": "Wat is de proeftijd?", "conversation_history": []},
+        )
+    assert resp.status_code == 200
+    # De proeftijd-chunk moet vóór de vulchunks staan in de context
+    kennis = captured["knowledge_chunks"].lower()
+    assert kennis.index("proeftijd") < kennis.index("garantie")
+
+
+def test_chat_stream_scoort_bronnen_op_trefwoorden(client):
+    """Bij bestaande kennischunks moet de source-scoring logica doorlopen worden."""
+    payload = {
+        "question_id": "q_scoring",
+        "question": "Wat is de proeftijd?",
+        "answer": "De proeftijd bedraagt twee maanden voor onbepaalde tijd contracten",
+        "topic": "proeftijd_duur",
+        "contract_type": "arbeidscontract",
+        "source_file": "contract.pdf",
+        "source_passage": "Proeftijd van twee maanden.",
+        "source_page": 1,
+    }
+    resp = client.post("/api/save-answer", json=payload)
+    assert resp.status_code == 200
+
+    async def fake_stream(*_args, **_kwargs):
+        yield "De proeftijd bedraagt twee maanden"
+
+    with patch("llm_client.chat_stream", fake_stream):
+        resp = client.post(
+            "/api/chat",
+            json={"message": "Wat is de proeftijd?", "conversation_history": []},
+        )
+    assert resp.status_code == 200
+    assert "sources" in resp.text
+
+
+def test_chat_stuurt_relevante_chunk_ook_als_niet_meest_recent(client):
+    """Een oude chunk die inhoudelijk bij de vraag past mag niet buiten het
+    context-venster vallen alleen omdat er 20+ recentere chunks bestaan."""
+    oude_payload = {
+        "question_id": "q_oud",
+        "question": "Waarom is geen expliciete motivering voor ontslag verplicht?",
+        "answer": "Ontslagrecht is wettelijk geregeld, niet contractueel.",
+        "topic": "ontslaggronden",
+        "contract_type": "arbeidscontract",
+        "source_file": "arbeidscontract.docx",
+        "source_passage": "Ontslag geschiedt conform de wettelijke bepalingen.",
+        "source_page": None,
+    }
+    assert client.post("/api/save-answer", json=oude_payload).status_code == 200
+
+    for i in range(20):
+        vuller = {
+            "question_id": f"q_vuller_{i}",
+            "question": f"Vulvraag nummer {i} over garantie",
+            "answer": f"Vulantwoord nummer {i} over garantietermijnen",
+            "topic": "garantie_clausule",
+            "contract_type": "leverancier",
+            "source_file": "leverancier.pdf",
+            "source_passage": "Garantie van twaalf maanden.",
+            "source_page": None,
+        }
+        assert client.post("/api/save-answer", json=vuller).status_code == 200
+
+    captured = {}
+
+    async def fake_stream(*_args, **kwargs):
+        captured["knowledge_chunks"] = kwargs.get("knowledge_chunks", "")
+        yield "Antwoord op basis van de kennisbank"
+
+    with patch("llm_client.chat_stream", fake_stream):
+        resp = client.post(
+            "/api/chat",
+            json={
+                "message": "Waarom is geen expliciete motivering voor ontslag verplicht?",
+                "conversation_history": [],
+            },
+        )
+    assert resp.status_code == 200
+    assert "ontslag" in captured["knowledge_chunks"].lower()
+
+
+# ── /api/download DOCX-preview ──────────────────────────────────────────────
+
+
+def test_download_docx_html_preview(client, tmp_path):
+    import hashlib
+
+    content = b"fake docx content"
+    file_hash = hashlib.sha256(content).hexdigest()
+
+    with patch("database.DB_PATH", tmp_path / "test.db"):
+        import database
+
+        database.save_processed_document(
+            filename="preview.docx",
+            file_hash=file_hash,
+            contract_type="NDA",
+            page_count=1,
+            extracted_topics="[]",
+        )
+
+    bestand = tmp_path / f"{file_hash}.docx"
+    bestand.write_bytes(content)
+
+    mock_result = MagicMock()
+    mock_result.value = "<p>Documentinhoud</p>"
+
+    with (
+        patch("main.UPLOAD_DIR", tmp_path),
+        patch("mammoth.convert_to_html", return_value=mock_result),
+    ):
+        resp = client.get("/api/download/preview.docx")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers["content-type"]
+    assert "Documentinhoud" in resp.text
+    assert "raw=true" in resp.text
+
+
+def test_download_docx_raw_geeft_origineel_bestand(client, tmp_path):
+    import hashlib
+
+    content = b"fake docx content"
+    file_hash = hashlib.sha256(content).hexdigest()
+
+    with patch("database.DB_PATH", tmp_path / "test.db"):
+        import database
+
+        database.save_processed_document(
+            filename="origineel.docx",
+            file_hash=file_hash,
+            contract_type="NDA",
+            page_count=1,
+            extracted_topics="[]",
+        )
+
+    bestand = tmp_path / f"{file_hash}.docx"
+    bestand.write_bytes(content)
+
+    with patch("main.UPLOAD_DIR", tmp_path):
+        resp = client.get("/api/download/origineel.docx?raw=true")
+    assert resp.status_code == 200
+    assert "attachment" in resp.headers["content-disposition"]
+
+
+def test_download_docx_mammoth_fout(client, tmp_path):
+    import hashlib
+
+    content = b"corrupt docx"
+    file_hash = hashlib.sha256(content).hexdigest()
+
+    with patch("database.DB_PATH", tmp_path / "test.db"):
+        import database
+
+        database.save_processed_document(
+            filename="kapot.docx",
+            file_hash=file_hash,
+            contract_type="NDA",
+            page_count=1,
+            extracted_topics="[]",
+        )
+
+    bestand = tmp_path / f"{file_hash}.docx"
+    bestand.write_bytes(content)
+
+    with (
+        patch("main.UPLOAD_DIR", tmp_path),
+        patch("mammoth.convert_to_html", side_effect=ValueError("Kapotte docx")),
+    ):
+        resp = client.get("/api/download/kapot.docx")
+    assert resp.status_code == 422
+
+
+# ── Corrupt JSON foutpaden ───────────────────────────────────────────────────
+
+
+def test_upload_document_corrupt_extracted_topics(client, tmp_path):
+    import hashlib
+
+    content = b"%PDF corrupt-json-test"
+    file_hash = hashlib.sha256(content).hexdigest()
+
+    with patch("database.DB_PATH", tmp_path / "test.db"):
+        import database
+
+        database.save_processed_document(
+            filename="corrupt.pdf",
+            file_hash=file_hash,
+            contract_type="NDA",
+            page_count=1,
+            extracted_topics="{niet geldige json",
+        )
+
+    resp = client.post(
+        "/api/upload-document",
+        files={"file": ("corrupt.pdf", content, "application/pdf")},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["detected_topics"] == []
+
+
+def test_parse_document_corrupt_extracted_topics(client, tmp_path):
+    import hashlib
+
+    content = b"%PDF corrupt-parse-test"
+    file_hash = hashlib.sha256(content).hexdigest()
+
+    with patch("database.DB_PATH", tmp_path / "test.db"):
+        import database
+
+        database.save_processed_document(
+            filename="corrupt2.pdf",
+            file_hash=file_hash,
+            contract_type="NDA",
+            page_count=1,
+            extracted_topics="{niet geldige json",
+        )
+
+    resp = client.post(
+        "/api/parse-document",
+        files={"file": ("corrupt2.pdf", content, "application/pdf")},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["detected_topics"] == []
+
+
+def test_get_documents_corrupt_extracted_topics(client, tmp_path):
+    with patch("database.DB_PATH", tmp_path / "test.db"):
+        import database
+
+        database.save_processed_document(
+            filename="corrupt3.pdf",
+            file_hash="corrupthash",
+            contract_type="NDA",
+            page_count=1,
+            extracted_topics="{niet geldige json",
+        )
+
+    resp = client.get("/api/documents")
+    assert resp.status_code == 200
+    docs = resp.json()["documents"]
+    assert docs[0]["detected_topics"] == []
+
+
+# ── Ollama-fouten en paginamatching ─────────────────────────────────────────
+
+
+def test_upload_document_ollama_analyse_faalt_met_paginamatch(client, tmp_path):
+    mock_parse = MagicMock(
+        return_value=("Contract tekst", [{"text": "Belangrijke passage hier", "page": 3}])
+    )
+    with (
+        patch("document_parser.parse_pdf", mock_parse),
+        patch("llm_client.analyze_document", side_effect=RuntimeError("Ollama down")),
+        patch("main.UPLOAD_DIR", tmp_path),
+    ):
+        resp = client.post(
+            "/api/upload-document",
+            files={"file": ("fout.pdf", b"%PDF fout-test", "application/pdf")},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["contract_type"] == "anders"
+
+
+def test_upload_document_paginamatch_gevonden(client, tmp_path):
+    mock_parse = MagicMock(
+        return_value=("Contract tekst", [{"text": "Belangrijke passage hier", "page": 3}])
+    )
+    mock_analyse = AsyncMock(
+        return_value={
+            "contract_type": "NDA",
+            "detected_topics": [{"topic": "x", "passage": "Belangrijke passage"}],
+        }
+    )
+    with (
+        patch("document_parser.parse_pdf", mock_parse),
+        patch("llm_client.analyze_document", mock_analyse),
+        patch("main.UPLOAD_DIR", tmp_path),
+    ):
+        resp = client.post(
+            "/api/upload-document",
+            files={"file": ("match.pdf", b"%PDF match-test", "application/pdf")},
+        )
+    assert resp.status_code == 200
+    topics = resp.json()["detected_topics"]
+    assert topics[0]["page"] == 3
+
+
+def test_analyze_document_docx_met_ollama_fout_en_paginamatch(client, tmp_path):
+    import hashlib
+
+    content = b"docx analyse test"
+    file_hash = hashlib.sha256(content).hexdigest()
+
+    with patch("database.DB_PATH", tmp_path / "test.db"):
+        import database
+
+        doc_id = database.save_document_stub(
+            filename="analyse.docx", file_hash=file_hash, page_count=1
+        )
+
+    bestand = tmp_path / f"{file_hash}.docx"
+    bestand.write_bytes(content)
+
+    mock_parse = MagicMock(
+        return_value=("tekst", [{"text": "Passage over geheimhouding", "page": None}])
+    )
+    with (
+        patch("document_parser.parse_docx", mock_parse),
+        patch("llm_client.analyze_document", side_effect=RuntimeError("Ollama down")),
+        patch("main.UPLOAD_DIR", tmp_path),
+    ):
+        resp = client.post(f"/api/analyze-document/{doc_id}")
+    assert resp.status_code == 200
+    assert resp.json()["contract_type"] == "anders"
+
+# ── /api/settings ────────────────────────────────────────────────────────────
+
+
+def test_get_settings_default_ollama(client, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    import llm_settings
+
+    monkeypatch.setattr(llm_settings, "_provider", "ollama")
+    resp = client.get("/api/settings")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["provider"] == "ollama"
+    assert data["claude_available"] is False
+    assert "claude_model" in data
+
+
+def test_set_settings_claude_zonder_key_geeft_400(client, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    import llm_settings
+
+    monkeypatch.setattr(llm_settings, "_provider", "ollama")
+    resp = client.post("/api/settings", json={"provider": "claude"})
+    assert resp.status_code == 400
+    assert "ANTHROPIC_API_KEY" in resp.json()["detail"]
+    assert client.get("/api/settings").json()["provider"] == "ollama"
+
+
+def test_set_settings_onbekende_provider_geeft_400(client, monkeypatch):
+    import llm_settings
+
+    monkeypatch.setattr(llm_settings, "_provider", "ollama")
+    resp = client.post("/api/settings", json={"provider": "gpt"})
+    assert resp.status_code == 400
+    assert client.get("/api/settings").json()["provider"] == "ollama"
+
+
+def test_set_settings_switch_naar_claude_en_terug(client, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    import llm_settings
+
+    monkeypatch.setattr(llm_settings, "_provider", "ollama")
+
+    resp = client.post("/api/settings", json={"provider": "claude"})
+    assert resp.status_code == 200
+    assert resp.json()["provider"] == "claude"
+
+    data = client.get("/api/settings").json()
+    assert data["provider"] == "claude"
+    assert data["claude_available"] is True
+
+    resp = client.post("/api/settings", json={"provider": "ollama"})
+    assert resp.status_code == 200
+    assert client.get("/api/settings").json()["provider"] == "ollama"
+
+
+def test_chat_gebruikt_claude_provider_na_switch(client, monkeypatch):
+    """Na de switch loopt de chat via claude_client — met dezelfde prompt-opbouw."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    import llm_settings
+
+    monkeypatch.setattr(llm_settings, "_provider", "claude")
+
+    payload = {
+        "question_id": "q_claude",
+        "question": "Wat is de looptijd?",
+        "answer": "Twee jaar vanwege de projectduur",
+        "topic": "looptijd_bepalen",
+        "contract_type": "NDA",
+        "source_file": "nda.pdf",
+        "source_passage": "Looptijd van twee jaar.",
+        "source_page": None,
+    }
+    assert client.post("/api/save-answer", json=payload).status_code == 200
+
+    captured = {}
+
+    async def fake_claude_stream(prompt):
+        captured["prompt"] = prompt
+        yield "Antwoord via Claude"
+
+    with patch("claude_client.stream", fake_claude_stream):
+        resp = client.post(
+            "/api/chat",
+            json={"message": "Wat is de looptijd?", "conversation_history": []},
+        )
+    assert resp.status_code == 200
+    assert "Antwoord via Claude" in resp.text
+    # Zelfde strikte prompt als bij Ollama
+    assert "KENNISBANK" in captured["prompt"]
+    assert "STRIKTE REGELS" in captured["prompt"]

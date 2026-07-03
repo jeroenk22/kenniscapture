@@ -10,9 +10,15 @@ pdfplumber==0.11.10
 # HTTP client (voor Ollama)
 httpx>=0.28.0
 
+# Claude API (optionele demo-provider, zie llm_settings.py)
+anthropic>=0.116.0
+
 # Utilities
 python-dotenv>=1.0.0
 aiofiles>=24.0.0
+
+# Document weergave
+mammoth>=1.8.0
 
 # Streamlit UI
 streamlit==1.58.0
