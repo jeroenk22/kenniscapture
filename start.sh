@@ -61,7 +61,10 @@ VITE_HOST_FLAG=""
 if [ "$HOST" = "0.0.0.0" ]; then
     VITE_HOST_FLAG="--host"
 fi
-(cd "$ROOT_DIR/chatbot_ui" && pnpm dev --port "$PORT_CHATBOT" --open $VITE_HOST_FLAG) &
+# --strictPort: als de poort bezet is hard falen in plaats van stil
+# uitwijken naar een andere poort — de tunnel en de CORS-config van de
+# backend wijzen naar déze poort
+(cd "$ROOT_DIR/chatbot_ui" && pnpm dev --port "$PORT_CHATBOT" --strictPort --open $VITE_HOST_FLAG) &
 
 sleep 2
 
