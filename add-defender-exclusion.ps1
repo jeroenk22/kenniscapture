@@ -24,5 +24,5 @@ $exclusions = (Get-MpPreference).ExclusionPath
 if ($exclusions -contains $projectPath) {
     Write-Host "Bevestigd: $projectPath staat in de Defender-uitsluitingslijst." -ForegroundColor Green
 } else {
-    Write-Host "Kon niet bevestigen dat de uitsluiting is toegevoegd — controleer handmatig via Windows Beveiliging." -ForegroundColor Yellow
+    Write-Host "Kon niet bevestigen dat de uitsluiting is toegevoegd - controleer handmatig via Windows Beveiliging." -ForegroundColor Yellow
 }
