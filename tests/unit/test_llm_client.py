@@ -234,19 +234,67 @@ async def test_analyze_document_analyseert_hele_lange_tekst_in_segmenten():
 
 
 @pytest.mark.asyncio
-async def test_analyze_document_filtert_onbekende_topic_sleutels():
-    """Topics die het model verzint (niet in de catalogus) worden genegeerd."""
+async def test_analyze_document_behoudt_nieuwe_topic_sleutels():
+    """Een clausule die niet bij een bekend onderwerp past krijgt een eigen
+    nieuwe sleutel — de catalogus is een generieke dekking-tracker die
+    meegroeit met nieuwe contracttypes, geen vaste vragenlijst."""
     payload = json.dumps({
-        "contract_type": "NDA",
+        "contract_type": "aannemingsovereenkomst",
         "detected_topics": [
-            {"topic": "verzonnen_onderwerp", "passage": "iets"},
+            {
+                "topic": "boeteclausule_bij_vertraging",
+                "topic_label": "Boeteclausule bij vertraging",
+                "passage": "1.500 euro per kalenderdag",
+            },
             {"topic": "looptijd_bepalen", "passage": "looptijd van twee jaar"},
         ],
     })
     with patch.object(llm_client, "_generate", AsyncMock(return_value=payload)):
         result = await llm_client.analyze_document("tekst", ["looptijd_bepalen"])
-    topics = [t["topic"] for t in result["detected_topics"]]
-    assert topics == ["looptijd_bepalen"]
+    topics = {t["topic"]: t["topic_label"] for t in result["detected_topics"]}
+    assert topics == {
+        "boeteclausule_bij_vertraging": "Boeteclausule bij vertraging",
+        "looptijd_bepalen": "Looptijd bepalen",
+    }
+
+
+@pytest.mark.asyncio
+async def test_analyze_document_herkent_nieuw_contracttype():
+    """Het contracttype is niet beperkt tot een vaste enum."""
+    payload = json.dumps({"contract_type": "aannemingsovereenkomst", "detected_topics": []})
+    with patch.object(llm_client, "_generate", AsyncMock(return_value=payload)):
+        result = await llm_client.analyze_document("tekst", [])
+    assert result["contract_type"] == "aannemingsovereenkomst"
+
+
+@pytest.mark.asyncio
+async def test_analyze_document_normaliseert_contracttype_spaties():
+    payload = json.dumps({"contract_type": "  huur overeenkomst  ", "detected_topics": []})
+    with patch.object(llm_client, "_generate", AsyncMock(return_value=payload)):
+        result = await llm_client.analyze_document("tekst", [])
+    assert result["contract_type"] == "huur_overeenkomst"
+
+
+@pytest.mark.asyncio
+async def test_analyze_document_behoudt_bestaand_contracttype_hoofdletters():
+    """Bestaande contracttypes zoals 'NDA' blijven consistent met de seed-data."""
+    payload = json.dumps({"contract_type": "NDA", "detected_topics": []})
+    with patch.object(llm_client, "_generate", AsyncMock(return_value=payload)):
+        result = await llm_client.analyze_document("tekst", [])
+    assert result["contract_type"] == "NDA"
+
+
+@pytest.mark.asyncio
+async def test_analyze_document_geeft_known_types_hint_door_in_prompt():
+    captured = {}
+
+    async def fake_generate(prompt, temperature=0.1):
+        captured["prompt"] = prompt
+        return json.dumps({"contract_type": "anders", "detected_topics": []})
+
+    with patch.object(llm_client, "_generate", fake_generate):
+        await llm_client.analyze_document("tekst", [], ["NDA", "arbeidscontract"])
+    assert "NDA, arbeidscontract" in captured["prompt"]
 
 
 @pytest.mark.asyncio
@@ -265,7 +313,9 @@ async def test_analyze_document_eerste_vindplaats_wint_bij_dubbel_topic():
     ]
     with patch.object(llm_client, "_generate", AsyncMock(side_effect=antwoorden)):
         result = await llm_client.analyze_document(lange_tekst, ["looptijd_bepalen"])
-    assert result["detected_topics"] == [{"topic": "looptijd_bepalen", "passage": "eerste"}]
+    assert result["detected_topics"] == [
+        {"topic": "looptijd_bepalen", "passage": "eerste", "topic_label": "Looptijd bepalen"}
+    ]
 
 
 @pytest.mark.asyncio

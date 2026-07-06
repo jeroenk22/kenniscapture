@@ -954,6 +954,70 @@ def test_analyze_document_docx_met_ollama_fout_en_paginamatch(client, tmp_path):
     assert resp.status_code == 200
     assert resp.json()["contract_type"] == "anders"
 
+
+def test_nieuw_contracttype_zonder_seed_topics_werkt_volledig(client, tmp_path):
+    """End-to-end: een contracttype dat niet in de seed-catalogus staat
+    (bijv. een aannemingsovereenkomst) moet toch een volledig werkende
+    kenniscaptureflow opleveren — upload, nieuwe topic automatisch
+    toegevoegd aan de dekking-catalogus, en een vraag genereren daarover."""
+    mock_parse = MagicMock(
+        return_value=(
+            "Aannemingsovereenkomst tekst",
+            [{"text": "boete van 1.500 euro per kalenderdag", "page": 6}],
+        )
+    )
+    mock_analyse = AsyncMock(
+        return_value={
+            "contract_type": "aannemingsovereenkomst",
+            "detected_topics": [
+                {
+                    "topic": "boeteclausule_bij_vertraging",
+                    "topic_label": "Boeteclausule bij vertraging",
+                    "passage": "boete van 1.500 euro per kalenderdag",
+                }
+            ],
+        }
+    )
+    with (
+        patch("document_parser.parse_pdf", mock_parse),
+        patch("llm_client.analyze_document", mock_analyse),
+        patch("main.UPLOAD_DIR", tmp_path),
+    ):
+        upload_resp = client.post(
+            "/api/upload-document",
+            files={"file": ("aanneming.pdf", b"%PDF aanneming-test", "application/pdf")},
+        )
+    assert upload_resp.status_code == 200
+    upload_data = upload_resp.json()
+    assert upload_data["contract_type"] == "aannemingsovereenkomst"
+    assert upload_data["detected_topics"][0]["topic_label"] == "Boeteclausule bij vertraging"
+
+    # De nieuwe topic moet nu in de dekking-catalogus staan
+    import database
+
+    catalogus = database.get_topics_for_contract("aannemingsovereenkomst")
+    assert any(t["topic"] == "boeteclausule_bij_vertraging" for t in catalogus)
+
+    # En er moet daadwerkelijk een vraag over gegenereerd kunnen worden
+    mock_question = AsyncMock(return_value={"question": "Waarom 1.500 euro per dag?"})
+    with patch("llm_client.generate_question", mock_question):
+        question_resp = client.post(
+            "/api/generate-question",
+            json={
+                "document_id": upload_data["document_id"],
+                "contract_type": "aannemingsovereenkomst",
+                "detected_topics": ["boeteclausule_bij_vertraging"],
+                "source_passage": "",
+                "source_file": "aanneming.pdf",
+                "passages_by_topic": {
+                    "boeteclausule_bij_vertraging": "boete van 1.500 euro per kalenderdag"
+                },
+            },
+        )
+    assert question_resp.status_code == 200
+    assert question_resp.json()["has_question"] is True
+
+
 # ── /api/settings ────────────────────────────────────────────────────────────
 
 

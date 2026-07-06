@@ -9,6 +9,7 @@ llm_settings (standaard: ollama, volledig lokaal).
 import difflib
 import json
 import logging
+import re
 from collections.abc import AsyncGenerator
 
 import claude_client
@@ -23,25 +24,37 @@ Geef ALLEEN een JSON response terug, geen uitleg of markdown.
 Contract tekst:
 {contract_text}
 
-Bekende onderwerpen (gebruik EXACT deze sleutels): {topics_list}
+Bekende contracttypes uit eerdere contracten (hergebruik er een als die
+inhoudelijk past): {known_types}
+
+Bekende onderwerpen uit eerdere contracten (hergebruik een sleutel als een
+clausule hier EXACT inhoudelijk bij past): {topics_list}
 
 Instructies:
-- Loop ALLE bekende onderwerpen één voor één langs en controleer of er in de
-  tekst hierboven een clausule of passage over staat.
-- Neem ALLEEN onderwerpen op die daadwerkelijk in de tekst voorkomen.
-  Onderwerpen zonder passage laat je VOLLEDIG WEG uit de lijst — geen
-  lege passages.
+- Bepaal zelf het contracttype op basis van de daadwerkelijke inhoud van de
+  tekst (bijvoorbeeld "arbeidscontract", "NDA", "leverancier",
+  "aannemingsovereenkomst", "huurovereenkomst", ...). Hergebruik een bekend
+  contracttype als dat inhoudelijk past; is de tekst duidelijk een ander
+  soort contract, verzin dan een nieuwe, korte en consistente naam
+  (snake_case bij meerdere woorden).
+- Loop de bekende onderwerpen langs en controleer of er in de tekst een
+  clausule of passage over staat. Neem ALLEEN onderwerpen op die
+  daadwerkelijk in de tekst voorkomen — geen lege passages.
+- Kom je een clausule tegen die inhoudelijk NIET bij een bekend onderwerp
+  past, verzin dan een nieuwe, korte snake_case sleutel plus een leesbare
+  Nederlandse label voor dat onderwerp. Zo blijft de onderwerpencatalogus
+  meegroeien met nieuwe contracttypes.
 - "passage" moet een LETTERLIJK citaat uit de tekst zijn (max 200 tekens).
   Kies het citaat met de concrete keuze: bedragen, termijnen, percentages of
   voorwaarden. Verzin GEEN passages en parafraseer NIET.
-- Verzin GEEN onderwerpen die niet in de lijst staan.
 
 Geef terug:
 {{
-  "contract_type": "NDA|arbeidscontract|leverancier|anders",
+  "contract_type": "korte_consistente_categorienaam",
   "detected_topics": [
     {{
-      "topic": "topic_sleutel_uit_de_lijst",
+      "topic": "snake_case_sleutel (bestaand of nieuw)",
+      "topic_label": "Leesbare Nederlandse naam van het onderwerp",
       "passage": "het exacte stukje tekst uit het contract (max 200 chars)"
     }}
   ]
@@ -150,11 +163,29 @@ def _segmenteer(text: str) -> list[str]:
     return segmenten[:_MAX_SEGMENTEN]
 
 
-async def analyze_document(contract_text: str, topics_list: list[str]) -> dict:
+def _slugify(text: str) -> str:
+    """Normaliseer een door de LLM verzonnen topic-sleutel naar snake_case."""
+    text = re.sub(r"[^a-z0-9]+", "_", (text or "").strip().lower())
+    return text.strip("_")
+
+
+def _normalize_contract_type(text: str) -> str:
+    """Ruim spaties op maar behoud hoofdlettergebruik (bv. bestaande 'NDA')."""
+    return re.sub(r"\s+", "_", (text or "").strip())
+
+
+async def analyze_document(
+    contract_text: str,
+    topics_list: list[str],
+    known_contract_types: list[str] | None = None,
+) -> dict:
     """Analyseer het VOLLEDIGE contract in segmenten en voeg resultaten samen.
 
     Elke segment gaat apart door de LLM, zodat ook clausules achterin lange
-    contracten gevonden worden i.p.v. alleen de eerste pagina's.
+    contracten gevonden worden i.p.v. alleen de eerste pagina's. Het
+    contracttype en onderwerpen die niet bij de bekende catalogus passen
+    worden niet weggegooid maar overgenomen — de catalogus is een generieke
+    dekking-tracker die meegroeit met elk nieuw contracttype.
     """
     bekende_topics = set(topics_list)
     contract_type = "anders"
@@ -164,7 +195,10 @@ async def analyze_document(contract_text: str, topics_list: list[str]) -> dict:
     for i, segment in enumerate(segmenten, start=1):
         prompt = ANALYSE_PROMPT.format(
             contract_text=segment,
-            topics_list=", ".join(topics_list),
+            topics_list=", ".join(topics_list) if topics_list else "(nog geen)",
+            known_types=", ".join(known_contract_types)
+            if known_contract_types
+            else "(nog geen)",
         )
         raw = await _generate(prompt)
         try:
@@ -178,25 +212,34 @@ async def analyze_document(contract_text: str, topics_list: list[str]) -> dict:
             )
             continue
 
-        segment_type = analysis.get("contract_type", "anders")
-        if contract_type == "anders" and segment_type:
+        segment_type = (
+            _normalize_contract_type(analysis.get("contract_type", "")) or "anders"
+        )
+        if contract_type == "anders" and segment_type != "anders":
             contract_type = segment_type
 
         for item in analysis.get("detected_topics", []):
-            key = item.get("topic", "")
+            key = _slugify(item.get("topic", ""))
+            if not key:
+                continue
             if key not in bekende_topics:
                 # Vang typefouten van het model op ("onslaggronden" →
-                # "ontslaggronden") zodat echte clausules niet verloren gaan
+                # "ontslaggronden") zodat het geen onnodig nieuw topic wordt
                 dichtstbij = difflib.get_close_matches(
                     key, topics_list, n=1, cutoff=0.8
                 )
-                if not dichtstbij:
-                    continue
-                key = dichtstbij[0]
-                item = {**item, "topic": key}
+                if dichtstbij:
+                    key = dichtstbij[0]
+                # geen close match: dit is een echt nieuw onderwerp — blijft
+                # staan i.p.v. te worden weggegooid
             # Zonder letterlijke passage is er geen gegronde vraag mogelijk
             if not str(item.get("passage") or "").strip():
                 continue
+            label = (
+                str(item.get("topic_label") or "").strip()
+                or key.replace("_", " ").capitalize()
+            )
+            item = {**item, "topic": key, "topic_label": label}
             # Eerste vindplaats wint
             if key not in topics_by_key:
                 topics_by_key[key] = item

@@ -159,18 +159,25 @@ async def upload_document(file: UploadFile = File(...)):
 
     all_topics = database.get_all_topics()
     topics_list = [t["topic"] for t in all_topics]
+    known_types = database.get_known_contract_types()
 
     try:
-        analysis = await llm_client.analyze_document(text, topics_list)
+        analysis = await llm_client.analyze_document(text, topics_list, known_types)
     except Exception as exc:
-        _log.warning("Ollama analyse mislukt: %s", exc, exc_info=True)
+        _log.warning("LLM-analyse mislukt: %s", exc, exc_info=True)
         analysis = {"contract_type": "anders", "detected_topics": []}
 
     contract_type = analysis.get("contract_type", "anders")
     detected = analysis.get("detected_topics", [])
 
-    # Voeg paginanummers toe vanuit de parsing
+    # Nieuwe onderwerpen (nieuw contracttype of nieuwe clausule) toevoegen
+    # aan de dekking-catalogus, en paginanummers koppelen vanuit de parsing
     for item in detected:
+        database.ensure_topic(
+            contract_type,
+            item.get("topic", ""),
+            item.get("topic_label") or item.get("topic", ""),
+        )
         passage_text = item.get("passage", "")
         for p in passages:
             if passage_text and passage_text[:50] in p.get("text", ""):
@@ -290,17 +297,23 @@ async def analyze_document_endpoint(doc_id: int):
 
     all_topics = database.get_all_topics()
     topics_list = [t["topic"] for t in all_topics]
+    known_types = database.get_known_contract_types()
 
     try:
-        analysis = await llm_client.analyze_document(text, topics_list)
+        analysis = await llm_client.analyze_document(text, topics_list, known_types)
     except Exception as exc:
-        _log.warning("Ollama analyse mislukt: %s", exc, exc_info=True)
+        _log.warning("LLM-analyse mislukt: %s", exc, exc_info=True)
         analysis = {"contract_type": "anders", "detected_topics": []}
 
     contract_type = analysis.get("contract_type", "anders")
     detected = analysis.get("detected_topics", [])
 
     for item in detected:
+        database.ensure_topic(
+            contract_type,
+            item.get("topic", ""),
+            item.get("topic_label") or item.get("topic", ""),
+        )
         passage_text = item.get("passage", "")
         for p in passages:
             if passage_text and passage_text[:50] in p.get("text", ""):

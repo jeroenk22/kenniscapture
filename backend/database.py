@@ -86,7 +86,11 @@ def init_db() -> None:
             )
         """)
 
-        # Seed knowledge_topics
+        # Seed knowledge_topics — startpunt voor de bekendste contracttypes.
+        # De catalogus is een dekking-tracker, geen vaste vragenlijst: nieuwe
+        # contracttypes en onderwerpen worden automatisch toegevoegd via
+        # ensure_topic() zodra de LLM een clausule detecteert die nog niet
+        # in de catalogus staat.
         topics = [
             # NDA
             (
@@ -206,6 +210,32 @@ def get_topics_for_contract(contract_type: str) -> list[dict]:
             (contract_type,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def ensure_topic(
+    contract_type: str, topic: str, topic_label: str, priority: int = 2
+) -> None:
+    """Voeg een door de LLM gedetecteerd onderwerp toe aan de dekking-catalogus.
+
+    Gebruikt INSERT OR IGNORE: bestaat de combinatie (contract_type, topic)
+    al, dan blijft het origineel (eerste vindplaats) staan. Zo groeit de
+    catalogus vanzelf mee met nieuwe contracttypes en clausules, zonder de
+    handmatig gecureerde starter-topics te overschrijven.
+    """
+    with _conn() as con:
+        con.execute(
+            "INSERT OR IGNORE INTO knowledge_topics "
+            "(contract_type, topic, topic_label, priority) VALUES (?, ?, ?, ?)",
+            (contract_type, topic, topic_label, priority),
+        )
+
+
+def get_known_contract_types() -> list[str]:
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT DISTINCT contract_type FROM knowledge_topics ORDER BY contract_type"
+        ).fetchall()
+        return [r["contract_type"] for r in rows]
 
 
 def get_processed_document(file_hash: str) -> dict | None:
