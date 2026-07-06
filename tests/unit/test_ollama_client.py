@@ -63,6 +63,18 @@ async def test_generate_connect_error():
             await ollama_client.generate("test")
 
 
+@pytest.mark.asyncio
+async def test_generate_timeout_error():
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = AsyncMock(side_effect=httpx.TimeoutException("timeout"))
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        with pytest.raises(RuntimeError, match="verbindingsfout"):
+            await ollama_client.generate("test")
+
+
 # ── stream ──────────────────────────────────────────────────────────────────
 
 

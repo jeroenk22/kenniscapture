@@ -53,6 +53,8 @@ async def generate(prompt: str) -> str:
         raise RuntimeError(
             f"Claude API fout ({exc.status_code}): {exc.message}"
         ) from exc
+    except anthropic.APIError as exc:
+        raise RuntimeError(f"Claude API fout: {exc}") from exc
     return "".join(block.text for block in response.content if block.type == "text")
 
 
@@ -73,3 +75,5 @@ async def stream(prompt: str) -> AsyncGenerator[str, None]:
         raise RuntimeError(
             f"Claude API fout ({exc.status_code}): {exc.message}"
         ) from exc
+    except anthropic.APIError as exc:
+        raise RuntimeError(f"Claude API fout: {exc}") from exc

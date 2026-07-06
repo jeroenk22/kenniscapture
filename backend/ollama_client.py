@@ -42,6 +42,12 @@ async def generate(prompt: str, temperature: float = 0.1) -> str:
             f"Kan geen verbinding maken met Ollama op {OLLAMA_BASE_URL}. "
             "Zorg dat Ollama draait: `ollama serve`"
         ) from exc
+    except (
+        httpx.TimeoutException,
+        httpx.RemoteProtocolError,
+        httpx.HTTPStatusError,
+    ) as exc:
+        raise RuntimeError(f"Ollama verbindingsfout: {exc}") from exc
 
 
 async def stream(prompt: str, temperature: float = 0.1) -> AsyncGenerator[str, None]:
