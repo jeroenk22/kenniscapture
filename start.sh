@@ -57,7 +57,7 @@ VITE_HOST_FLAG=""
 if [ "$HOST" = "0.0.0.0" ]; then
     VITE_HOST_FLAG="--host"
 fi
-(cd "$ROOT_DIR/chatbot_ui" && pnpm dev --port "$PORT_CHATBOT" $VITE_HOST_FLAG) &
+(cd "$ROOT_DIR/chatbot_ui" && pnpm dev --port "$PORT_CHATBOT" --open $VITE_HOST_FLAG) &
 
 sleep 2
 
