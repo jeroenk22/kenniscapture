@@ -23,6 +23,21 @@ st.set_page_config(
     layout="wide",
 )
 
+# Streamlit's standaard 'running'-indicator (het icoontje rechtsboven dat
+# tijdens elke rerun wisselt) en de vervaging van de pagina daarbij zijn
+# verwarrend tijdens lange acties zoals contractanalyse — we tonen zelf een
+# duidelijke statusmelding (st.status), dus verbergen we de standaard versie.
+st.markdown(
+    """
+    <style>
+    [data-testid="stStatusWidget"] { visibility: hidden; }
+    [data-testid="stAppViewContainer"] { opacity: 1 !important; transition: none !important; }
+    .stApp [data-stale="true"] { opacity: 1 !important; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 # === Header met logo ===
 _logo_path = Path(__file__).parent / "assets" / "tenbrinke-logo.png"
 _col_logo, _col_title = st.columns([1, 6])
@@ -70,6 +85,8 @@ def _init_session():
         "upload_queue": [],       # lijst van {name, data, type} wachtend op analyse
         "upload_results": [],     # afgeronde resultaten om te tonen
         "exhausted_documents": [],  # bestandsnamen zonder nog te stellen vragen (voorkomt ping-pong tussen documenten)
+        "opslaan_bezig": False,   # true tussen klik op Opslaan en het daadwerkelijk versturen
+        "pending_answer": None,   # antwoord-payload die nog verstuurd moet worden
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -229,68 +246,74 @@ with tab1:
         total = len(st.session_state.upload_queue) + len(st.session_state.upload_results)
         done = len(st.session_state.upload_results)
 
-        st.markdown(f"**Verwerken {done + 1}/{total}: {item['name']}**")
-        prog = st.progress(0)
-        status = st.empty()
-
-        # Fase 1 — upload + tekst extraheren
-        status.caption("📤 Bestand uploaden en tekst extraheren...")
-        prog.progress(15)
-        parse_result = _api(
-            "POST",
-            "/api/parse-document",
-            files={"file": (item["name"], item["data"], item["type"])},
-        )
-
-        if not parse_result:
-            prog.progress(100)
-            st.session_state.upload_results.append({"filename": item["name"], "warning": f"⚠️ {item['name']}: upload mislukt."})
-            st.session_state.upload_queue.pop(0)
-            st.rerun()
-
-        prog.progress(40)
-        already_done = parse_result.get("already_processed") and parse_result.get("detected_topics")
-
-        if already_done:
-            prog.progress(100)
-            result = {
-                "filename": parse_result["filename"],
-                "document_id": parse_result["doc_id"],
-                "contract_type": parse_result.get("contract_type"),
-                "detected_topics": parse_result.get("detected_topics", []),
-                "skipped": True,
-            }
-            st.session_state.current_document = result
-            st.session_state.current_question = None
-        else:
-            # Fase 2 — Ollama analyse
-            status.caption("🤖 AI leest het volledige contract door en zoekt alle relevante clausules — dit kan enkele minuten duren...")
-            prog.progress(45)
-            # Volledige doorlichting van lange contracten kan op CPU lang duren
-            analysis = _api(
+        with st.status(
+            f"Verwerken {done + 1}/{total}: {item['name']}", expanded=True
+        ) as status_box:
+            # Fase 1 — upload + tekst extraheren
+            status_box.write("📤 Bestand uploaden en tekst extraheren...")
+            parse_result = _api(
                 "POST",
-                f"/api/analyze-document/{parse_result['doc_id']}",
-                timeout=1800.0,
+                "/api/parse-document",
+                files={"file": (item["name"], item["data"], item["type"])},
             )
 
-            if not analysis or not analysis.get("detected_topics"):
-                prog.progress(100)
-                st.session_state.upload_results.append({
-                    "filename": item["name"],
-                    "warning": f"⚠️ {item['name']}: analyse onvolledig. Upload opnieuw om te herproberen.",
-                })
+            if not parse_result:
+                status_box.update(label=f"⚠️ {item['name']}: upload mislukt", state="error")
+                st.session_state.upload_results.append({"filename": item["name"], "warning": f"⚠️ {item['name']}: upload mislukt."})
                 st.session_state.upload_queue.pop(0)
                 st.rerun()
 
-            prog.progress(100)
-            result = {
-                "filename": parse_result["filename"],
-                "document_id": parse_result["doc_id"],
-                "contract_type": analysis.get("contract_type", "anders"),
-                "detected_topics": analysis.get("detected_topics", []),
-            }
-            st.session_state.current_document = result
-            st.session_state.current_question = None
+            already_done = parse_result.get("already_processed") and parse_result.get("detected_topics")
+
+            if already_done:
+                status_box.update(
+                    label=f"✅ {item['name']} was al eerder verwerkt", state="complete"
+                )
+                result = {
+                    "filename": parse_result["filename"],
+                    "document_id": parse_result["doc_id"],
+                    "contract_type": parse_result.get("contract_type"),
+                    "detected_topics": parse_result.get("detected_topics", []),
+                    "skipped": True,
+                }
+                st.session_state.current_document = result
+                st.session_state.current_question = None
+            else:
+                # Fase 2 — LLM-analyse
+                status_box.write(
+                    "🤖 AI leest het volledige contract door en zoekt alle relevante "
+                    "clausules — dit kan enkele minuten duren..."
+                )
+                # Volledige doorlichting van lange contracten kan op CPU lang duren
+                analysis = _api(
+                    "POST",
+                    f"/api/analyze-document/{parse_result['doc_id']}",
+                    timeout=1800.0,
+                )
+
+                if not analysis or not analysis.get("detected_topics"):
+                    status_box.update(
+                        label=f"⚠️ {item['name']}: analyse onvolledig", state="error"
+                    )
+                    st.session_state.upload_results.append({
+                        "filename": item["name"],
+                        "warning": f"⚠️ {item['name']}: analyse onvolledig. Upload opnieuw om te herproberen.",
+                    })
+                    st.session_state.upload_queue.pop(0)
+                    st.rerun()
+
+                result = {
+                    "filename": parse_result["filename"],
+                    "document_id": parse_result["doc_id"],
+                    "contract_type": analysis.get("contract_type", "anders"),
+                    "detected_topics": analysis.get("detected_topics", []),
+                }
+                status_box.update(
+                    label=f"✅ {item['name']} geanalyseerd — contracttype: {result['contract_type']}",
+                    state="complete",
+                )
+                st.session_state.current_document = result
+                st.session_state.current_question = None
 
         st.session_state.upload_results.append(result)
         st.session_state.upload_queue.pop(0)
@@ -336,7 +359,7 @@ with tab1:
                 for t in detected_topics_full
             }
 
-            with st.spinner("Volgende vraag ophalen..."):
+            with st.status("🧠 Volgende vraag wordt opgehaald...", expanded=False) as qstatus:
                 question_data = _api(
                     "POST",
                     "/api/generate-question",
@@ -351,8 +374,10 @@ with tab1:
                     },
                 )
                 if question_data and question_data.get("has_question"):
+                    qstatus.update(label="✅ Nieuwe vraag geladen", state="complete")
                     st.session_state.current_question = question_data
                 else:
+                    qstatus.update(label="🎉 Alle vragen beantwoord", state="complete")
                     st.success(f"🎉 Alle vragen voor **{doc.get('filename', 'dit document')}** zijn beantwoord!")
                     if doc.get("filename") not in st.session_state.exhausted_documents:
                         st.session_state.exhausted_documents.append(doc.get("filename"))
@@ -425,35 +450,39 @@ with tab1:
                 key=f"answer_{q.get('question_id', 'q')}",
             )
 
-            # Actieknoppen
+            # Actieknoppen — tijdens het opslaan (opslaan_bezig) staan ze
+            # allemaal vast, zodat dubbelklikken of wisselen van vraag
+            # tijdens het versturen niet kan
+            opslaan_bezig = st.session_state.opslaan_bezig
             col1, col2, col3 = st.columns(3)
             with col1:
-                if st.button("💾 Opslaan", type="primary", use_container_width=True):
+                if st.button(
+                    "💾 Opslaan",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=opslaan_bezig,
+                ):
                     if not answer.strip():
                         st.warning("Vul eerst een antwoord in.")
                     else:
-                        result = _api(
-                            "POST",
-                            "/api/save-answer",
-                            json={
-                                "question_id": q.get("question_id", ""),
-                                "question": q.get("question", ""),
-                                "answer": answer,
-                                "topic": q.get("topic", ""),
-                                "contract_type": doc.get("contract_type", ""),
-                                "source_file": q.get("source_file", ""),
-                                "source_passage": q.get("source_passage", ""),
-                                "source_page": q.get("source_page"),
-                            },
-                        )
-                        if result:
-                            st.success("✅ Antwoord opgeslagen!")
-                            st.session_state.current_question = None
-                            _get_completion.clear()
-                            st.rerun()
+                        # Zet de knoppen op 'bezig' en rerun eerst, zodat de
+                        # disabled-status direct zichtbaar wordt — de
+                        # daadwerkelijke API-call gebeurt pas in de volgende run
+                        st.session_state.opslaan_bezig = True
+                        st.session_state.pending_answer = {
+                            "question_id": q.get("question_id", ""),
+                            "question": q.get("question", ""),
+                            "answer": answer,
+                            "topic": q.get("topic", ""),
+                            "contract_type": doc.get("contract_type", ""),
+                            "source_file": q.get("source_file", ""),
+                            "source_passage": q.get("source_passage", ""),
+                            "source_page": q.get("source_page"),
+                        }
+                        st.rerun()
 
             with col2:
-                if st.button("⏰ Straks", use_container_width=True):
+                if st.button("⏰ Straks", use_container_width=True, disabled=opslaan_bezig):
                     _api(
                         "POST",
                         "/api/skip-question",
@@ -463,7 +492,7 @@ with tab1:
                     st.rerun()
 
             with col3:
-                if st.button("🚫 Niet relevant", use_container_width=True):
+                if st.button("🚫 Niet relevant", use_container_width=True, disabled=opslaan_bezig):
                     _api(
                         "POST",
                         "/api/skip-question",
@@ -471,6 +500,22 @@ with tab1:
                     )
                     st.session_state.current_question = None
                     st.rerun()
+
+            # Fase 2 van het opslaan: de daadwerkelijke API-call, nu de
+            # disabled-knoppen al zichtbaar zijn voor de gebruiker
+            if opslaan_bezig and st.session_state.pending_answer:
+                with st.status("💾 Antwoord opslaan...", expanded=False) as save_status:
+                    result = _api("POST", "/api/save-answer", json=st.session_state.pending_answer)
+                    if result:
+                        save_status.update(label="✅ Antwoord opgeslagen", state="complete")
+                    else:
+                        save_status.update(label="⚠️ Opslaan mislukt", state="error")
+                st.session_state.opslaan_bezig = False
+                st.session_state.pending_answer = None
+                if result:
+                    st.session_state.current_question = None
+                    _get_completion.clear()
+                st.rerun()
 
 
 # =============================================================
@@ -490,6 +535,27 @@ with tab2:
         st.metric("✅ Gedekte kennisblokken", len(chunks))
     with col2:
         st.metric("❓ Open topics", len(open_topics))
+
+    st.divider()
+
+    # Geüploade documenten
+    st.subheader("📁 Geüploade documenten")
+    docs_data = _api("GET", "/api/documents")
+    docs = docs_data.get("documents", [])
+    if docs:
+        for doc in docs:
+            safe_file = html.escape(doc.get("filename", ""), quote=True)
+            safe_type = html.escape(doc.get("contract_type", "anders"), quote=True)
+            encoded_file = urllib.parse.quote(doc.get("filename", ""), safe="")
+            preview_url = f"{PUBLIC_API_BASE}/api/download/{encoded_file}"
+            n_topics = len(doc.get("detected_topics", []))
+            st.markdown(
+                f'📄 <a href="{preview_url}" target="_blank">{safe_file}</a> '
+                f"— {safe_type} · {n_topics} topics",
+                unsafe_allow_html=True,
+            )
+    else:
+        st.caption("Nog geen documenten geüpload.")
 
     st.divider()
 
