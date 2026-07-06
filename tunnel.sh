@@ -25,6 +25,19 @@ if ! command -v cloudflared &>/dev/null; then
     exit 1
 fi
 
+# Eén tunnelsessie tegelijk: een tweede sessie zou zes tunnels geven en
+# scripts die elkaars tunnel.env overschrijven of verwijderen
+if tasklist 2>/dev/null | grep -qi "cloudflared"; then
+    echo "❌ Er draait al een tunnelsessie (cloudflared is actief)."
+    echo "   Stop die eerst met Ctrl+C in het bijbehorende venster, of hard met:"
+    echo "   taskkill //F //IM cloudflared.exe"
+    exit 1
+fi
+
+# Er draait geen tunnel, dus een eventueel achtergebleven tunnel.env is
+# verweesd (bijv. van een hard afgesloten sessie) en mag weg
+rm -f "$ROOT_DIR/tunnel.env"
+
 # Windows-editors (Notepad, PowerShell) laten soms CRLF-regeleinden achter —
 # dat plakt een onzichtbare \r achter elke waarde in config.env
 sed -i 's/\r$//' "$ROOT_DIR/config.env" 2>/dev/null || true
@@ -79,7 +92,11 @@ opruimen() {
     for pid in "${PIDS[@]}"; do
         kill "$pid" 2>/dev/null || true
     done
-    rm -f "$ROOT_DIR/tunnel.env"
+    # Alleen het tunnel.env van déze sessie opruimen — nooit dat van een
+    # nieuwere sessie die inmiddels gestart is
+    if [ -n "$API_URL" ] && grep -q "$API_URL" "$ROOT_DIR/tunnel.env" 2>/dev/null; then
+        rm -f "$ROOT_DIR/tunnel.env"
+    fi
     rm -rf "$LOG_DIR"
     echo "   tunnel.env opgeruimd. Herstart de services met:"
     echo "   ./stop.sh && ./start.sh   (weer puur interne URLs)"
