@@ -89,6 +89,21 @@ async def test_generate_api_statusfout(monkeypatch):
             await claude_client.generate("prompt")
 
 
+@pytest.mark.asyncio
+async def test_generate_overige_sdk_fout(monkeypatch):
+    """Andere anthropic-SDK-fouten dan connectie/status krijgen ook een nette
+    RuntimeError (bijv. een response die niet aan het schema voldoet)."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    request = httpx.Request("POST", "https://api.anthropic.com")
+    response = httpx.Response(200, request=request)
+    fout = anthropic.APIResponseValidationError(response=response, body=None)
+    mock_client = _mock_anthropic_client(side_effect=fout)
+
+    with patch("claude_client.anthropic.AsyncAnthropic", return_value=mock_client):
+        with pytest.raises(RuntimeError, match="Claude API fout"):
+            await claude_client.generate("prompt")
+
+
 # ── stream ──────────────────────────────────────────────────────────────────
 
 
@@ -135,5 +150,20 @@ async def test_stream_verbindingsfout(monkeypatch):
 
     with patch("claude_client.anthropic.AsyncAnthropic", return_value=mock_client):
         with pytest.raises(RuntimeError, match="Claude API"):
+            async for _ in claude_client.stream("prompt"):
+                pass
+
+
+@pytest.mark.asyncio
+async def test_stream_overige_sdk_fout(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    request = httpx.Request("POST", "https://api.anthropic.com")
+    response = httpx.Response(200, request=request)
+    fout = anthropic.APIResponseValidationError(response=response, body=None)
+    mock_client = MagicMock()
+    mock_client.messages.stream = MagicMock(side_effect=fout)
+
+    with patch("claude_client.anthropic.AsyncAnthropic", return_value=mock_client):
+        with pytest.raises(RuntimeError, match="Claude API fout"):
             async for _ in claude_client.stream("prompt"):
                 pass
