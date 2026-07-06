@@ -88,6 +88,9 @@ mkdir -p "$ROOT_DIR/uploads"
 echo "   ✅ data/ en uploads/ aangemaakt"
 
 # === Ollama model downloaden ===
+# Windows-editors (Notepad, PowerShell) laten soms CRLF-regeleinden achter —
+# dat plakt een onzichtbare \r achter elke waarde in config.env
+sed -i 's/\r$//' "$ROOT_DIR/config.env" 2>/dev/null || true
 source "$ROOT_DIR/config.env" 2>/dev/null || true
 MODEL="${OLLAMA_MODEL:-llama3.1:8b}"
 echo ""
