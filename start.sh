@@ -5,6 +5,10 @@ ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Laad config.env als die bestaat
 if [ -f "$ROOT_DIR/config.env" ]; then
+    # Windows-editors (Notepad, PowerShell) laten soms CRLF-regeleinden
+    # achter — dat plakt een onzichtbare \r achter elke waarde, waardoor
+    # bijv. LLM_PROVIDER=claude niet meer matcht met "claude" in Python
+    sed -i 's/\r$//' "$ROOT_DIR/config.env" 2>/dev/null || true
     set -a
     source "$ROOT_DIR/config.env"
     set +a

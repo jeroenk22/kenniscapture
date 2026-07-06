@@ -25,6 +25,9 @@ if ! command -v cloudflared &>/dev/null; then
     exit 1
 fi
 
+# Windows-editors (Notepad, PowerShell) laten soms CRLF-regeleinden achter —
+# dat plakt een onzichtbare \r achter elke waarde in config.env
+sed -i 's/\r$//' "$ROOT_DIR/config.env" 2>/dev/null || true
 set -a
 source "$ROOT_DIR/config.env" 2>/dev/null || true
 set +a
