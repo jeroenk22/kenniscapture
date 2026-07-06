@@ -32,9 +32,13 @@ stop_processen() {
     fi
 }
 
-stop_processen "uvicorn main:app"      "FastAPI backend"
-stop_processen "streamlit run app.py"  "Streamlit"
-stop_processen "vite"                  "React (Vite)"
+# '.*' tussen commando en argumenten: op Windows is de commandline
+# 'C:\...\Scripts\uvicorn.exe main:app ...' — een spatie-patroon als
+# 'uvicorn main:app' matcht daar nooit op, waardoor de backend elke
+# herstart overleefde met verouderde env vars (o.a. CORS_ORIGINS)
+stop_processen "uvicorn.*main:app"      "FastAPI backend"
+stop_processen "streamlit.*run app.py"  "Streamlit"
+stop_processen "vite"                   "React (Vite)"
 
 echo ""
 echo "✅ Klaar"
