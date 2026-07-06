@@ -98,3 +98,55 @@ def test_get_document_by_filename_niet_gevonden() -> None:
             result = database.get_document_by_filename("bestaat_niet.docx")
 
     assert result is None
+
+
+def test_ensure_topic_voegt_nieuw_contracttype_toe() -> None:
+    """ensure_topic laat de catalogus meegroeien met een nieuw contracttype."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "test.db"
+        with patch("database.DB_PATH", db_path):
+            database.init_db()
+            database.ensure_topic(
+                "aannemingsovereenkomst", "boeteclausule_bij_vertraging", "Boeteclausule bij vertraging"
+            )
+            topics = database.get_topics_for_contract("aannemingsovereenkomst")
+
+    assert len(topics) == 1
+    assert topics[0]["topic"] == "boeteclausule_bij_vertraging"
+    assert topics[0]["topic_label"] == "Boeteclausule bij vertraging"
+
+
+def test_ensure_topic_overschrijft_bestaand_topic_niet() -> None:
+    """Een tweede vindplaats van dezelfde sleutel wijzigt de eerste label niet."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "test.db"
+        with patch("database.DB_PATH", db_path):
+            database.init_db()
+            database.ensure_topic("leverancier", "nieuw_onderwerp", "Eerste label")
+            database.ensure_topic("leverancier", "nieuw_onderwerp", "Tweede label")
+            topics = database.get_topics_for_contract("leverancier")
+
+    nieuw = [t for t in topics if t["topic"] == "nieuw_onderwerp"]
+    assert len(nieuw) == 1
+    assert nieuw[0]["topic_label"] == "Eerste label"
+
+
+def test_get_known_contract_types_bevat_seed_types() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "test.db"
+        with patch("database.DB_PATH", db_path):
+            database.init_db()
+            types = database.get_known_contract_types()
+
+    assert set(types) == {"NDA", "arbeidscontract", "leverancier"}
+
+
+def test_get_known_contract_types_bevat_nieuw_type_na_ensure_topic() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "test.db"
+        with patch("database.DB_PATH", db_path):
+            database.init_db()
+            database.ensure_topic("huurovereenkomst", "huurprijs_bepalen", "Huurprijs bepalen")
+            types = database.get_known_contract_types()
+
+    assert "huurovereenkomst" in types
